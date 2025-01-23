@@ -54,11 +54,9 @@ class BaseGraphModel(ARModel):
                 setattr(self, name, attr_value)
 
         # Specify dimensions of data
-        print(
-            "Loaded graph with "
-            f"{self.num_total_grid_nodes + self.num_mesh_nodes} "
-            f"nodes ({self.num_total_grid_nodes} grid, "
-            f"{self.num_mesh_nodes} mesh)"
+        utils.rank_zero_print(
+            f"Loaded graph with {self.num_total_grid_nodes + self.num_mesh_nodes} "
+            f"nodes ({self.num_total_grid_nodes} grid, {self.num_mesh_nodes} mesh)"
         )
 
         # Determine grid hidden dim

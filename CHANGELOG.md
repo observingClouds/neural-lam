@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - use dynamic versioning based on git tags and commit hashes
   [\#118](https://github.com/mllam/neural-lam/pull/118), @observingClouds
 
+- Only print on rank 0 to avoid duplicates of all print statements.
+[\#103](https://github.com/mllam/neural-lam/pull/103) @simonkamuk @sadamov
+
+- Add support for multi-node training.
+[\#103](https://github.com/mllam/neural-lam/pull/103) @simonkamuk @sadamov
+
+
 ## [unreleased](https://github.com/joeloskarsson/neural-lam/compare/v0.2.0...HEAD)
 
 ### Added

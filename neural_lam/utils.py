@@ -6,6 +6,7 @@ import shutil
 import cartopy.crs as ccrs
 import numpy as np
 import torch
+from pytorch_lightning.utilities import rank_zero_only
 from torch import nn
 from tueplots import bundles, figsizes
 
@@ -329,6 +330,12 @@ def fractional_plot_bundle(fraction):
         original_figsize[1],
     )
     return bundle
+
+
+@rank_zero_only
+def rank_zero_print(*args, **kwargs):
+    """Print only from rank 0 process"""
+    print(*args, **kwargs)
 
 
 def init_wandb_metrics(wandb_logger, val_steps):

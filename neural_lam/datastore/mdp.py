@@ -14,6 +14,7 @@ import xarray as xr
 from loguru import logger
 
 # Local
+from ..utils import rank_zero_print
 from .base import BaseRegularGridDatastore, CartesianGridShape
 
 
@@ -75,11 +76,11 @@ class MDPDatastore(BaseRegularGridDatastore):
             self._ds = mdp.create_dataset(config=self._config)
             self._ds.to_zarr(fp_ds)
 
-        print("The loaded datastore contains the following features:")
+        rank_zero_print("The loaded datastore contains the following features:")
         for category in ["state", "forcing", "static"]:
             if len(self.get_vars_names(category)) > 0:
                 var_names = self.get_vars_names(category)
-                print(f" {category:<8s}: {' '.join(var_names)}")
+                rank_zero_print(f" {category:<8s}: {' '.join(var_names)}")
 
         # check that all three train/val/test splits are available
         required_splits = ["train", "val", "test"]
@@ -90,14 +91,14 @@ class MDPDatastore(BaseRegularGridDatastore):
                 f"splits: {available_splits}"
             )
 
-        print("With the following splits (over time):")
+        rank_zero_print("With the following splits (over time):")
         for split in required_splits:
             da_split = self._ds.splits.sel(split_name=split)
             if "grid_index" in da_split.coords:
                 da_split = da_split.isel(grid_index=0)
             da_split_start = da_split.sel(split_part="start").load().item()
             da_split_end = da_split.sel(split_part="end").load().item()
-            print(f" {split:<8s}: {da_split_start} to {da_split_end}")
+            rank_zero_print(f" {split:<8s}: {da_split_start} to {da_split_end}")
 
         self.is_forecast = "elapsed_forecast_duration" in self._ds.dims
         if self.is_forecast:
