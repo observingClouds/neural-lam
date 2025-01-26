@@ -1,11 +1,50 @@
 # Standard library
 import sys
+import os
 
 # Third-party
 import mlflow
 import mlflow.pytorch
 import pytorch_lightning as pl
 from loguru import logger
+from dvclive.lightning import DVCLiveLogger
+
+
+class CustomDVCLiveLogger(DVCLiveLogger):
+    """
+    Custom DVCLive logger that adds functionality not present in the default
+    """
+
+    def __init__(self):
+        super().__init__()
+
+    @property
+    def save_dir(self):
+        """
+        Returns the directory where the artifacts are saved
+        """
+        return "plots"
+
+    def log_image(self, key, images, step=None):
+        """
+        Log a matplotlib figure as an image to DVCLive
+
+        key: str
+            Key to log the image under
+        images: list
+            List of matplotlib figures to log
+        step: Union[int, None]
+            Step to log the image under. If None, logs under the key directly
+        """
+        # Third-party
+        from PIL import Image
+
+        if step is not None:
+            key = f"{key}_{step}"
+
+        # Save image to logging directory
+        temporary_image = f"{key}.png"
+        images[0].savefig(os.path.join(self.save_dir, temporary_image))
 
 
 class CustomMLFlowLogger(pl.loggers.MLFlowLogger):

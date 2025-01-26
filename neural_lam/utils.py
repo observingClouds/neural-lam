@@ -12,7 +12,7 @@ from torch import nn
 from tueplots import bundles, figsizes
 
 # Local
-from .custom_loggers import CustomMLFlowLogger
+from .custom_loggers import CustomMLFlowLogger, CustomDVCLiveLogger
 
 
 class BufferList(nn.Module):
@@ -257,6 +257,8 @@ def init_training_logger_metrics(training_logger, val_steps):
             experiment.define_metric(f"val_loss_unroll{step}", summary="min")
     elif isinstance(training_logger, MLFlowLogger):
         pass
+    elif isinstance(training_logger, CustomDVCLiveLogger):
+        pass
     else:
         warnings.warn(
             "Only WandbLogger & MLFlowLogger is supported for tracking metrics.\
@@ -304,6 +306,11 @@ def setup_training_logger(datastore, args, run_name):
         )
         logger.log_hyperparams(
             dict(training=vars(args), datastore=datastore._config)
+        )
+    elif args.logger == "dvc":
+        logger = CustomDVCLiveLogger()
+        logger.log_hyperparams(
+            dict(training=vars(args))
         )
 
     return logger

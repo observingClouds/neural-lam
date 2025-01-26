@@ -10,8 +10,10 @@ import pytorch_lightning as pl
 import torch
 from lightning_fabric.utilities import seed
 from loguru import logger
+from dvclive import Live
 
 # Local
+import neural_lam
 from . import utils
 from .config import load_config_and_datastore
 from .models import GraphLAM, HiLAM, HiLAMParallel
@@ -186,8 +188,8 @@ def main(input_args=None):
         "--logger",
         type=str,
         default="wandb",
-        choices=["wandb", "mlflow"],
-        help="Logger to use for training (wandb/mlflow) (default: wandb)",
+        choices=["wandb", "mlflow", "dvc"],
+        help="Logger to use for training (wandb/mlflow/dvc) (default: wandb)",
     )
     parser.add_argument(
         "--logger-project",
@@ -306,33 +308,35 @@ def main(input_args=None):
         mode="min",
         save_last=True,
     )
-    trainer = pl.Trainer(
-        max_epochs=args.epochs,
-        deterministic=True,
-        strategy="ddp",
-        accelerator=device_name,
-        num_nodes=args.num_nodes,
-        devices=devices,
-        logger=training_logger,
-        log_every_n_steps=1,
-        callbacks=[checkpoint_callback],
-        check_val_every_n_epoch=args.val_interval,
-        precision=args.precision,
-    )
-
-    # Only init once, on rank 0 only
-    if trainer.global_rank == 0:
-        utils.init_training_logger_metrics(
-            training_logger, val_steps=args.val_steps_to_log
-        )  # Do after initializing logger
-    if args.eval:
-        trainer.test(
-            model=model,
-            datamodule=data_module,
-            ckpt_path=args.load,
+    with Live("metrics", monitor_system=True) as live:
+        trainer = pl.Trainer(
+            max_epochs=args.epochs,
+            deterministic=True,
+            strategy="ddp",
+            accelerator=device_name,
+            num_nodes=args.num_nodes,
+            devices=devices,
+            logger=training_logger,
+            log_every_n_steps=1,
+            callbacks=[checkpoint_callback],
+            check_val_every_n_epoch=args.val_interval,
+            precision=args.precision,
         )
-    else:
-        trainer.fit(model=model, datamodule=data_module, ckpt_path=args.load)
+
+        # Only init once, on rank 0 only
+        if trainer.global_rank == 0:
+            utils.init_training_logger_metrics(
+                training_logger, val_steps=args.val_steps_to_log
+            )  # Do after initializing logger
+        if args.eval:
+            trainer.test(
+                model=model,
+                datamodule=data_module,
+                ckpt_path=args.load,
+            )
+        else:
+            trainer.fit(model=model, datamodule=data_module, ckpt_path=args.load)
+            live.log_param("neural_lam_version", neural_lam.__version__)
 
 
 if __name__ == "__main__":
