@@ -1,6 +1,7 @@
 # Standard library
 import os
 import pickle
+import warnings
 from typing import List, Union
 
 # Third-party
@@ -8,7 +9,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pytorch_lightning as pl
 import torch
-import wandb
 import xarray as xr
 from loguru import logger
 
@@ -733,15 +733,45 @@ class ARModel(pl.LightningModule):
 
                 example_i = self.plotted_examples
 
-                wandb.log(
-                    {
-                        f"{var_name}_example_{example_i}": wandb.Image(fig)
-                        for var_name, fig in var_figs.items()
-                    }
-                )
+                for var_name, fig in zip(
+                    self._datastore.get_vars_names("state"), var_figs
+                ):
+
+                    # We need treat logging images differently for different
+                    # loggers. WANDB can log multiple images to the same key,
+                    # while other loggers, as MLFlow, need unique keys for
+                    # each image.
+                    if isinstance(self.logger, pl.loggers.WandbLogger):
+                        key = f"{var_name}_example_{example_i}"
+                    else:
+                        key = f"{var_name}_example"
+
+                    if hasattr(self.logger, "log_image"):
+                        self.logger.log_image(key=key, images=[fig], step=t_i)
+                    else:
+                        warnings.warn(
+                            f"{self.logger} does not support image logging."
+                        )
+
                 plt.close(
                     "all"
                 )  # Close all figs for this time step, saves memory
+
+            # Save pred and target as .pt files
+            torch.save(
+                pred_slice.cpu(),
+                os.path.join(
+                    self.logger.save_dir,
+                    f"example_pred_{self.plotted_examples}.pt",
+                ),
+            )
+            torch.save(
+                target_slice.cpu(),
+                os.path.join(
+                    self.logger.save_dir,
+                    f"example_target_{self.plotted_examples}.pt",
+                ),
+            )
 
     def create_metric_log_dict(self, metric_tensor, prefix, metric_name):
         """
@@ -760,12 +790,18 @@ class ARModel(pl.LightningModule):
             datastore=self._datastore,
         )
         full_log_name = f"{prefix}_{metric_name}"
-        log_dict[full_log_name] = wandb.Image(metric_fig)
+        log_dict[full_log_name] = metric_fig
 
         if prefix == "test":
             # Save pdf
             metric_fig.savefig(
-                os.path.join(wandb.run.dir, f"{full_log_name}.pdf")
+                os.path.join(self.logger.save_dir, f"{full_log_name}.pdf")
+            )
+            # Save errors also as csv
+            np.savetxt(
+                os.path.join(self.logger.save_dir, f"{full_log_name}.csv"),
+                metric_tensor.cpu().numpy(),
+                delimiter=",",
             )
 
         # Check if metrics are watched, log exact values for specific vars
@@ -820,12 +856,27 @@ class ARModel(pl.LightningModule):
                     metric_rescaled.cpu().numpy().T,
                 )
 
-        if (
-            self.trainer.is_global_zero
-            and not self.trainer.sanity_checking
-            and metrics_dict
-        ):
-            wandb.log(log_dict)  # Log all
+        # Ensure that log_dict has structure for
+        # logging as dict(str, plt.Figure)
+        assert all(
+            isinstance(key, str) and isinstance(value, plt.Figure)
+            for key, value in log_dict.items()
+        )
+
+        if self.trainer.is_global_zero and not self.trainer.sanity_checking:
+
+            current_epoch = self.trainer.current_epoch
+
+            for key, figure in log_dict.items():
+                # For other loggers than wandb, add epoch to key.
+                # Wandb can log multiple images to the same key, while other
+                # loggers, such as MLFlow need unique keys for each image.
+                if not isinstance(self.logger, pl.loggers.WandbLogger):
+                    key = f"{key}-{current_epoch}"
+
+                if hasattr(self.logger, "log_image"):
+                    self.logger.log_image(key=key, images=[figure])
+
             plt.close("all")  # Close all figs
 
             # Create and save xr.ds
@@ -891,9 +942,13 @@ class ARModel(pl.LightningModule):
                 )
             ]
 
-            # log all to same wandb key, sequentially
-            for fig in loss_map_figs:
-                wandb.log({"test_loss": wandb.Image(fig)})
+            # log all to same key, sequentially
+            for i, fig in enumerate(loss_map_figs):
+                key = "test_loss"
+                if not isinstance(self.logger, pl.loggers.WandbLogger):
+                    key = f"{key}_{i}"
+                if hasattr(self.logger, "log_image"):
+                    self.logger.log_image(key=key, images=[fig])
 
             # also make without title and save as pdf
             pdf_loss_map_figs = [
@@ -902,14 +957,16 @@ class ARModel(pl.LightningModule):
                 )
                 for loss_map in mean_spatial_loss
             ]
-            pdf_loss_maps_dir = os.path.join(wandb.run.dir, "spatial_loss_maps")
+            pdf_loss_maps_dir = os.path.join(
+                self.logger.save_dir, "spatial_loss_maps"
+            )
             os.makedirs(pdf_loss_maps_dir, exist_ok=True)
             for t_i, fig in zip(self.args.val_steps_to_log, pdf_loss_map_figs):
                 fig.savefig(os.path.join(pdf_loss_maps_dir, f"loss_t{t_i}.pdf"))
             # save mean spatial loss as .pt file also
             torch.save(
                 mean_spatial_loss.cpu(),
-                os.path.join(wandb.run.dir, "mean_spatial_loss.pt"),
+                os.path.join(self.logger.save_dir, "mean_spatial_loss.pt"),
             )
 
         self.spatial_loss_maps.clear()

@@ -30,6 +30,9 @@ dependencies = [
     "plotly",
     "mllam-data-prep>=0.5.0",
     "weather-model-graphs @ git+https://github.com/joeloskarsson/weather-model-graphs.git@decoding_mask"
+    "mlflow>=2.16.2",
+    "boto3>=1.35.32",
+    "pynvml>=12.0.0",
 ]
 requires-python = ">=3.10,<3.12"
 
