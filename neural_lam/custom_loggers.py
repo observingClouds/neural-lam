@@ -1,6 +1,6 @@
 # Standard library
-import sys
 import os
+import sys
 
 # Third-party
 import mlflow
@@ -51,12 +51,12 @@ class CustomMLFlowLogger(pl.loggers.MLFlowLogger):
         step: Union[int, None]
             Step to log the image under. If None, logs under the key directly
         """
+        # Standard library
+        import os
+
         # Third-party
         import botocore.exceptions
         from PIL import Image
-        import tempfile
-        import pathlib
-        import os
 
         if step is not None:
             key = f"{key}_{step}"

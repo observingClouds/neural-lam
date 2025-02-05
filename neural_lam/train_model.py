@@ -24,10 +24,12 @@ MODELS = {
     "hi_lam_parallel": HiLAMParallel,
 }
 
+
 def none_or_str(value):
     if value == "None":
         return None
     return value
+
 
 @logger.catch
 def main(input_args=None):
