@@ -1,5 +1,6 @@
 # Standard library
 import sys
+import os
 
 # Third-party
 import mlflow
@@ -23,6 +24,8 @@ class CustomMLFlowLogger(pl.loggers.MLFlowLogger):
         mlflow.start_run(run_id=self.run_id, log_system_metrics=True)
         mlflow.set_tag("mlflow.runName", run_name)
         mlflow.log_param("run_id", self.run_id)
+        mlflow.log_param("user", os.environ.get("USER", "unknown"))
+        mlflow.log_param("dvc_exp_name", os.environ.get("DVC_EXP_NAME", None))
 
     @property
     def save_dir(self):
