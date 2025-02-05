@@ -23,6 +23,10 @@ MODELS = {
     "hi_lam_parallel": HiLAMParallel,
 }
 
+def none_or_str(value):
+    if value == "None":
+        return None
+    return value
 
 @logger.catch
 def main(input_args=None):
@@ -77,7 +81,7 @@ def main(input_args=None):
     )
     parser.add_argument(
         "--load",
-        type=str,
+        type=none_or_str,
         help="Path to load model parameters from (default: None)",
     )
     parser.add_argument(
@@ -162,7 +166,7 @@ def main(input_args=None):
     # Evaluation options
     parser.add_argument(
         "--eval",
-        type=str,
+        type=none_or_str,
         help="Eval model on given data split (val/test) "
         "(default: None (train model))",
     )
@@ -190,7 +194,7 @@ def main(input_args=None):
         help="Logger to use for training (wandb/mlflow) (default: wandb)",
     )
     parser.add_argument(
-        "--logger-project",
+        "--logger_project",
         type=str,
         default="neural_lam",
         help="Logger project name, for eg. Wandb (default: neural_lam)",
