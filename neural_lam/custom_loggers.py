@@ -52,7 +52,7 @@ class CustomMLFlowLogger(pl.loggers.MLFlowLogger):
             Step to log the image under. If None, logs under the key directly
         """
         # Third-party
-        import botocore
+        import botocore.exceptions
         from PIL import Image
         import tempfile
         import pathlib
