@@ -194,7 +194,7 @@ def main(input_args=None):
         help="Logger to use for training (wandb/mlflow) (default: wandb)",
     )
     parser.add_argument(
-        "--logger_project",
+        "--logger-project",
         type=str,
         default="neural_lam",
         help="Logger project name, for eg. Wandb (default: neural_lam)",
@@ -316,6 +316,7 @@ def main(input_args=None):
         strategy="ddp",
         accelerator=device_name,
         num_nodes=args.num_nodes,
+        num_sanity_val_steps=0,
         devices=devices,
         logger=training_logger,
         log_every_n_steps=1,
