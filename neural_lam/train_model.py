@@ -296,9 +296,11 @@ def main(input_args=None):
     else:
         prefix = "train-"
     if args.load:
-        last_ckpt = torch.load(args.load)
-        path_last_ckpt = Path(list(checkpoint['callbacks'].values())[0]['last_model_path'])
-        run_name = path_last_ckpt[-2]
+        last_ckpt = torch.load(args.load, weights_only=False)
+        path_last_ckpt = Path(list(last_ckpt['callbacks'].values())[0]['last_model_path'])
+        run_name = path_last_ckpt.parts[-2]
+        if args.eval:
+            run_name = run_name.replace("train-","eval-")
     else:
         run_name = (
             f"{prefix}{args.model}-{args.processor_layers}x{args.hidden_dim}-"
