@@ -3,6 +3,7 @@ import json
 import random
 import time
 from argparse import ArgumentParser
+from pathlib import Path
 
 # Third-party
 # for logging the model:
@@ -294,10 +295,15 @@ def main(input_args=None):
         prefix = f"eval-{args.eval}-"
     else:
         prefix = "train-"
-    run_name = (
-        f"{prefix}{args.model}-{args.processor_layers}x{args.hidden_dim}-"
-        f"{time.strftime('%m_%d_%H')}-{random_run_id:04d}"
-    )
+    if args.load:
+        last_ckpt = torch.load(args.load)
+        path_last_ckpt = Path(list(checkpoint['callbacks'].values())[0]['last_model_path'])
+        run_name = path_last_ckpt[-2]
+    else:
+        run_name = (
+            f"{prefix}{args.model}-{args.processor_layers}x{args.hidden_dim}-"
+            f"{time.strftime('%m_%d_%H')}-{random_run_id:04d}"
+        )
 
     training_logger = utils.setup_training_logger(
         datastore=datastore, args=args, run_name=run_name
