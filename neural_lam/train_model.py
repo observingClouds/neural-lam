@@ -3,6 +3,7 @@ import json
 import random
 import time
 from argparse import ArgumentParser
+from pathlib import Path
 
 # Third-party
 # for logging the model:
@@ -22,6 +23,12 @@ MODELS = {
     "hi_lam": HiLAM,
     "hi_lam_parallel": HiLAMParallel,
 }
+
+
+def none_or_str(value):
+    if value == "None":
+        return None
+    return value
 
 
 @logger.catch
@@ -77,7 +84,7 @@ def main(input_args=None):
     )
     parser.add_argument(
         "--load",
-        type=str,
+        type=none_or_str,
         help="Path to load model parameters from (default: None)",
     )
     parser.add_argument(
@@ -162,7 +169,7 @@ def main(input_args=None):
     # Evaluation options
     parser.add_argument(
         "--eval",
-        type=str,
+        type=none_or_str,
         help="Eval model on given data split (val/test) "
         "(default: None (train model))",
     )
@@ -290,10 +297,17 @@ def main(input_args=None):
         prefix = f"eval-{args.eval}-"
     else:
         prefix = "train-"
-    run_name = (
-        f"{prefix}{args.model}-{args.processor_layers}x{args.hidden_dim}-"
-        f"{time.strftime('%m_%d_%H')}-{random_run_id:04d}"
-    )
+    if args.load:
+        last_ckpt = torch.load(args.load, weights_only=False)
+        path_last_ckpt = Path(list(last_ckpt['callbacks'].values())[0]['last_model_path'])
+        run_name = path_last_ckpt.parts[-2]
+        if args.eval:
+            run_name = run_name.replace("train-","eval-")
+    else:
+        run_name = (
+            f"{prefix}{args.model}-{args.processor_layers}x{args.hidden_dim}-"
+            f"{time.strftime('%m_%d_%H')}-{random_run_id:04d}"
+        )
 
     training_logger = utils.setup_training_logger(
         datastore=datastore, args=args, run_name=run_name
@@ -312,6 +326,7 @@ def main(input_args=None):
         strategy="ddp",
         accelerator=device_name,
         num_nodes=args.num_nodes,
+        num_sanity_val_steps=0,
         devices=devices,
         logger=training_logger,
         log_every_n_steps=1,

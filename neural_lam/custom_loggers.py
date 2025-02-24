@@ -1,4 +1,5 @@
 # Standard library
+import os
 import sys
 
 # Third-party
@@ -23,6 +24,8 @@ class CustomMLFlowLogger(pl.loggers.MLFlowLogger):
         mlflow.start_run(run_id=self.run_id, log_system_metrics=True)
         mlflow.set_tag("mlflow.runName", run_name)
         mlflow.log_param("run_id", self.run_id)
+        mlflow.log_param("user", os.environ.get("USER", "unknown"))
+        mlflow.log_param("dvc_exp_name", os.environ.get("DVC_EXP_NAME", None))
 
     @property
     def save_dir(self):
@@ -48,6 +51,9 @@ class CustomMLFlowLogger(pl.loggers.MLFlowLogger):
         step: Union[int, None]
             Step to log the image under. If None, logs under the key directly
         """
+        # Standard library
+        import os
+
         # Third-party
         from botocore.exceptions import NoCredentialsError
         from PIL import Image
@@ -57,10 +63,12 @@ class CustomMLFlowLogger(pl.loggers.MLFlowLogger):
 
         # Need to save the image to a temporary file, then log that file
         # mlflow.log_image, should do this automatically, but is buggy
-        temporary_image = f"{key}.png"
-        images[0].savefig(temporary_image)
+        if not os.path.exists(self.save_dir):
+            os.makedirs(self.save_dir)
+        path = f"{key}.png"
+        images[0].savefig(path)
 
-        img = Image.open(temporary_image)
+        img = Image.open(path)
         try:
             mlflow.log_image(img, f"{key}.png")
         except NoCredentialsError:
