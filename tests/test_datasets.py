@@ -1,5 +1,6 @@
 # Standard library
 from pathlib import Path
+from unittest.mock import MagicMock
 
 # Third-party
 import numpy as np
