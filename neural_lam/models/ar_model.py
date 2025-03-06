@@ -300,10 +300,8 @@ class ARModel(pl.LightningModule):
         prediction, target, pred_std, _, entry_mses = self.common_step(batch)
 
         # Compute mean RMSE for first prediction step
-        mean_rmse_ar_step_1 = torch.mean(
-            torch.sqrt(entry_mses[:, 0, :]), dim=0
-        )
-        
+        mean_rmse_ar_step_1 = torch.mean(torch.sqrt(entry_mses[:, 0, :]), dim=0)
+
         # Compute loss
         batch_loss = torch.mean(
             self.loss(
@@ -315,7 +313,8 @@ class ARModel(pl.LightningModule):
         train_log_dict = {"train_loss": batch_loss}
         state_var_names = self._datastore.get_vars_names(category="state")
         train_log_dict |= {
-            f"train_rmse_{v}": mean_rmse_ar_step_1[i] for (i, v) in enumerate(state_var_names)
+            f"train_rmse_{v}": mean_rmse_ar_step_1[i]
+            for (i, v) in enumerate(state_var_names)
         }
         train_log_dict["train_lr"] = self.trainer.optimizers[0].param_groups[0][
             "lr"
@@ -350,9 +349,7 @@ class ARModel(pl.LightningModule):
         prediction, target, pred_std, _, entry_mses = self.common_step(batch)
 
         # Compute mean RMSE for first prediction step
-        mean_rmse_ar_step_1 = torch.mean(
-            torch.sqrt(entry_mses[:, 0, :]), dim=0
-        )
+        mean_rmse_ar_step_1 = torch.mean(torch.sqrt(entry_mses[:, 0, :]), dim=0)
 
         time_step_loss = torch.mean(
             self.loss(
@@ -372,7 +369,8 @@ class ARModel(pl.LightningModule):
         # Log mean RMSE for first prediction step and learning rate
         state_var_names = self._datastore.get_vars_names(category="state")
         val_log_dict |= {
-            f"val_rmse_{v}": mean_rmse_ar_step_1[i] for (i, v) in enumerate(state_var_names)
+            f"val_rmse_{v}": mean_rmse_ar_step_1[i]
+            for (i, v) in enumerate(state_var_names)
         }
         val_log_dict["val_lr"] = self.trainer.optimizers[0].param_groups[0][
             "lr"
@@ -410,9 +408,7 @@ class ARModel(pl.LightningModule):
         # pred_steps, num_grid_nodes, d_f) or (d_f,)
 
         # Compute mean RMSE for first prediction step
-        mean_rmse_ar_step_1 = torch.mean(
-            torch.sqrt(entry_mses[:, 0, :]), dim=0
-        )
+        mean_rmse_ar_step_1 = torch.mean(torch.sqrt(entry_mses[:, 0, :]), dim=0)
 
         time_step_loss = torch.mean(
             self.loss(
@@ -431,7 +427,8 @@ class ARModel(pl.LightningModule):
         # Log mean RMSE for first prediction step and learning rate
         state_var_names = self._datastore.get_vars_names(category="state")
         test_log_dict |= {
-            f"test_rmse_{v}": mean_rmse_ar_step_1[i] for (i, v) in enumerate(state_var_names)
+            f"test_rmse_{v}": mean_rmse_ar_step_1[i]
+            for (i, v) in enumerate(state_var_names)
         }
         test_log_dict["test_lr"] = self.trainer.optimizers[0].param_groups[0][
             "lr"
