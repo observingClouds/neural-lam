@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Log evaluation images to `save_dir` and create folder if needed. [\#2](https://github.com/dmidk/neural-lam/pull/2)
 
+- Log learning rate and mean RMSE of all features during training, validation and testing. [\#5](https://github.com/dmidk/neural-lam/pull/5) @mafdmi
+
 
 *Below follows changelog from the main neural-lam repository:*
 
