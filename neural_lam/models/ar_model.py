@@ -283,7 +283,6 @@ class ARModel(pl.LightningModule):
         # prediction: (B, pred_steps, num_grid_nodes, d_f) pred_std: (B,
         # pred_steps, num_grid_nodes, d_f) or (d_f,)
 
-        # Calculate MSEs
         entry_mses = metrics.mse(
             prediction,
             target_states,
@@ -292,23 +291,19 @@ class ARModel(pl.LightningModule):
             sum_vars=False,
         )  # (B, pred_steps, d_f)
 
-        # Log mean RMSE for first prediction step
-        mean_rmse_ar_step_1 = np.mean(
-            np.sqrt(entry_mses[:, 0, :]), axis=0
-        )  # take mean across all samples in batch but only for first pred step
-        state_var_names = self._datastore.get_vars_names(category="state")
-        self.log_dict(
-            {v: mean_rmse_ar_step_1[i] for (i, v) in enumerate(state_var_names)}
-        )
-
         return prediction, target_states, pred_std, batch_times, entry_mses
 
     def training_step(self, batch):
         """
         Train on single batch
         """
-        prediction, target, pred_std, _, _ = self.common_step(batch)
+        prediction, target, pred_std, _, entry_mses = self.common_step(batch)
 
+        # Compute mean RMSE for first prediction step
+        mean_rmse_ar_step_1 = torch.mean(
+            torch.sqrt(entry_mses[:, 0, :]), dim=0
+        )
+        
         # Compute loss
         batch_loss = torch.mean(
             self.loss(
@@ -316,9 +311,17 @@ class ARModel(pl.LightningModule):
             )
         )  # mean over unrolled times and batch
 
-        log_dict = {"train_loss": batch_loss}
+        # Logging
+        train_log_dict = {"train_loss": batch_loss}
+        state_var_names = self._datastore.get_vars_names(category="state")
+        train_log_dict |= {
+            f"train_rmse_{v}": mean_rmse_ar_step_1[i] for (i, v) in enumerate(state_var_names)
+        }
+        train_log_dict["train_lr"] = self.trainer.optimizers[0].param_groups[0][
+            "lr"
+        ]
         self.log_dict(
-            log_dict,
+            train_log_dict,
             prog_bar=True,
             on_step=True,
             on_epoch=True,
@@ -346,6 +349,11 @@ class ARModel(pl.LightningModule):
         """
         prediction, target, pred_std, _, entry_mses = self.common_step(batch)
 
+        # Compute mean RMSE for first prediction step
+        mean_rmse_ar_step_1 = torch.mean(
+            torch.sqrt(entry_mses[:, 0, :]), dim=0
+        )
+
         time_step_loss = torch.mean(
             self.loss(
                 prediction, target, pred_std, mask=self.interior_mask_bool
@@ -361,6 +369,14 @@ class ARModel(pl.LightningModule):
             if step <= len(time_step_loss)
         }
         val_log_dict["val_mean_loss"] = mean_loss
+        # Log mean RMSE for first prediction step and learning rate
+        state_var_names = self._datastore.get_vars_names(category="state")
+        val_log_dict |= {
+            f"val_rmse_{v}": mean_rmse_ar_step_1[i] for (i, v) in enumerate(state_var_names)
+        }
+        val_log_dict["val_lr"] = self.trainer.optimizers[0].param_groups[0][
+            "lr"
+        ]
         self.log_dict(
             val_log_dict,
             on_step=False,
@@ -393,6 +409,11 @@ class ARModel(pl.LightningModule):
         # prediction: (B, pred_steps, num_grid_nodes, d_f) pred_std: (B,
         # pred_steps, num_grid_nodes, d_f) or (d_f,)
 
+        # Compute mean RMSE for first prediction step
+        mean_rmse_ar_step_1 = torch.mean(
+            torch.sqrt(entry_mses[:, 0, :]), dim=0
+        )
+
         time_step_loss = torch.mean(
             self.loss(
                 prediction, target, pred_std, mask=self.interior_mask_bool
@@ -407,6 +428,14 @@ class ARModel(pl.LightningModule):
             for step in self.args.val_steps_to_log
         }
         test_log_dict["test_mean_loss"] = mean_loss
+        # Log mean RMSE for first prediction step and learning rate
+        state_var_names = self._datastore.get_vars_names(category="state")
+        test_log_dict |= {
+            f"test_rmse_{v}": mean_rmse_ar_step_1[i] for (i, v) in enumerate(state_var_names)
+        }
+        test_log_dict["test_lr"] = self.trainer.optimizers[0].param_groups[0][
+            "lr"
+        ]
 
         self.log_dict(
             test_log_dict,
