@@ -274,6 +274,8 @@ class ARModel(pl.LightningModule):
         num_grid_nodes, d_features) forcing_features: (B, pred_steps,
         num_grid_nodes, d_forcing),
             where index 0 corresponds to index 1 of init_states
+
+        After unroll, the MSE is computed between prediction and target.
         """
         (init_states, target_states, forcing_features, batch_times) = batch
 
@@ -310,15 +312,16 @@ class ARModel(pl.LightningModule):
         )  # mean over unrolled times and batch
 
         # Logging
-        train_log_dict = {"train_loss": batch_loss}
-        state_var_names = self._datastore.get_vars_names(category="state")
-        train_log_dict |= {
-            f"train_rmse_{v}": mean_rmse_ar_step_1[i]
-            for (i, v) in enumerate(state_var_names)
+        train_log_dict = {
+            "train_loss": batch_loss,
+            **{
+                f"train_rmse_{v}": mean_rmse_ar_step_1[i]
+                for (i, v) in enumerate(
+                    self._datastore.get_vars_names(category="state")
+                )
+            },
+            "train_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
-        train_log_dict["train_lr"] = self.trainer.optimizers[0].param_groups[0][
-            "lr"
-        ]
         self.log_dict(
             train_log_dict,
             prog_bar=True,
@@ -359,22 +362,23 @@ class ARModel(pl.LightningModule):
         )  # (time_steps-1)
         mean_loss = torch.mean(time_step_loss)
 
-        # Log loss per time step forward and mean
         val_log_dict = {
-            f"val_loss_unroll{step}": time_step_loss[step - 1]
-            for step in self.args.val_steps_to_log
-            if step <= len(time_step_loss)
+            # Log loss per time step forward and mean
+            **{
+                f"val_loss_unroll{step}": time_step_loss[step - 1]
+                for step in self.args.val_steps_to_log
+                if step <= len(time_step_loss)
+            },
+            "val_mean_loss": mean_loss,
+            # Log mean RMSE for first prediction step and learning rate
+            **{
+                f"val_rmse_{v}": mean_rmse_ar_step_1[i]
+                for (i, v) in enumerate(
+                    self._datastore.get_vars_names(category="state")
+                )
+            },
+            "val_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
-        val_log_dict["val_mean_loss"] = mean_loss
-        # Log mean RMSE for first prediction step and learning rate
-        state_var_names = self._datastore.get_vars_names(category="state")
-        val_log_dict |= {
-            f"val_rmse_{v}": mean_rmse_ar_step_1[i]
-            for (i, v) in enumerate(state_var_names)
-        }
-        val_log_dict["val_lr"] = self.trainer.optimizers[0].param_groups[0][
-            "lr"
-        ]
         self.log_dict(
             val_log_dict,
             on_step=False,
@@ -383,7 +387,6 @@ class ARModel(pl.LightningModule):
             batch_size=batch[0].shape[0],
         )
 
-        # Store MSEs
         self.val_metrics["mse"].append(entry_mses)
 
     def on_validation_epoch_end(self):
@@ -442,7 +445,6 @@ class ARModel(pl.LightningModule):
             batch_size=batch[0].shape[0],
         )
 
-        # Store already computed MSEs
         self.test_metrics["mse"].append(entry_mses)
         # Compute all evaluation metrics for error maps Note: explicitly list
         # metrics here, as test_metrics can contain additional ones, computed
