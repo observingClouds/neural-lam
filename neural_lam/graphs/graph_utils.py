@@ -2,8 +2,8 @@
 import numpy as np
 import scipy
 import trimesh
-from graphcast import graphcast as gc_gc
-from graphcast import model_utils as gc_mu
+from neural_lam.graphs.icosahedral_mesh import TriangularMesh
+import neural_lam.graphs.graphcast_model_utils as gc_mu
 
 
 def node_cart_to_lat_lon(node_pos_cart):
@@ -58,7 +58,7 @@ def node_lat_lon_to_cart(node_lat_lon):
 def radius_query_indices_irregular(
     *,
     grid_lat_lon: np.ndarray,
-    mesh: gc_gc.icosahedral_mesh.TriangularMesh,
+    mesh: TriangularMesh,
     radius: float,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Returns mesh-grid edge indices for radius query.
@@ -110,7 +110,7 @@ def radius_query_indices_irregular(
 def in_mesh_triangle_indices_irregular(
     *,
     grid_lat_lon: np.ndarray,
-    mesh: gc_gc.icosahedral_mesh.TriangularMesh,
+    mesh: TriangularMesh,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Returns mesh-grid edge indices for grid points contained in mesh
     triangles.

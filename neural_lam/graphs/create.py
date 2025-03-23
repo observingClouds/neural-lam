@@ -2,9 +2,8 @@
 import numpy as np
 import scipy
 import torch
-from graphcast import graphcast as gc_gc
-from graphcast import icosahedral_mesh as gc_im
-from graphcast import model_utils as gc_mu
+import neural_lam.graphs.icosahedral_mesh as gc_im
+import neural_lam.graphs.graphcast_model_utils as gc_mu
 
 # First-party
 import neural_lam.graphs.graph_utils as gutils
@@ -19,6 +18,13 @@ GC_SPATIAL_FEATURES_KWARGS = {
     "relative_longitude_local_coordinates": True,
     "relative_latitude_local_coordinates": True,
 }
+
+# function from graphcast
+def _get_max_edge_distance(mesh):
+  senders, receivers = gc_im.faces_to_edges(mesh.faces)
+  edge_distances = np.linalg.norm(
+      mesh.vertices[senders] - mesh.vertices[receivers], axis=-1)
+  return edge_distances.max()
 
 
 def inter_mesh_connection(from_mesh, to_mesh):
@@ -40,7 +46,7 @@ def inter_mesh_connection(from_mesh, to_mesh):
 
     # Each node on lower (from) mesh will connect to 1 or 2 on level above
     # pylint: disable-next=protected-access
-    radius = 1.1 * gc_gc._get_max_edge_distance(from_mesh)
+    radius = 1.1 * _get_max_edge_distance(from_mesh)
     query_indices = kd_tree.query_ball_point(x=from_mesh.vertices, r=radius)
 
     from_edge_indices = []

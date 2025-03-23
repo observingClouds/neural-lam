@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch_geometric as pyg
-from graphcast import graphcast as gc_gc
 from spherical_geometry.polygon import SphericalPolygon
 
 # Local
@@ -16,6 +15,15 @@ from .config import load_config_and_datastores
 from .graphs import create as gcreate
 from .graphs import graph_utils as gutils
 from .graphs import vis as gvis
+from .graphs.icosahedral_mesh import faces_to_edges
+
+
+# function from graphcast
+def _get_max_edge_distance(mesh):
+  senders, receivers = faces_to_edges(mesh.faces)
+  edge_distances = np.linalg.norm(
+      mesh.vertices[senders] - mesh.vertices[receivers], axis=-1)
+  return edge_distances.max()
 
 
 def main():
@@ -164,12 +172,12 @@ def main():
             mesh_down_features_list,
             os.path.join(save_dir_path, "mesh_down_features.pt"),
         )
-        max_mesh_edge_len = gc_gc._get_max_edge_distance(m2m_graphs[0])
+        max_mesh_edge_len = _get_max_edge_distance(m2m_graphs[0])
     else:
         merged_mesh, mesh_list = gcreate.create_multiscale_mesh(
             args.splits, args.levels
         )
-        max_mesh_edge_len = gc_gc._get_max_edge_distance(mesh_list[-1])
+        max_mesh_edge_len = _get_max_edge_distance(mesh_list[-1])
 
         if not global_graph:
             print("Subsetting mesh graph...")
