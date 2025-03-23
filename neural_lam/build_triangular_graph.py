@@ -103,6 +103,7 @@ def main():
         np.float32
     )  # Must be float32 for interoperability with gc code
     # (num_nodes_full, 2)
+    grid_lat_lon = np.rad2deg(grid_lat_lon)
     num_grid_nodes = grid_lat_lon.shape[0]
 
     # Make all longitudes be in [0, 360]
