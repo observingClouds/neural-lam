@@ -464,16 +464,6 @@ def main(input_args=None):
     training_logger = utils.setup_training_logger(
         datastore=datastore, args=args, run_name=run_name
     )
-
-    callbacks.append(
-        pl.callbacks.ModelCheckpoint(
-            dirpath=f"saved_models/{run_name}",
-            filename="min_val_loss",
-            monitor="val_mean_loss",
-            mode="min",
-            save_last=True,
-        )
-    )
     
     trainer = pl.Trainer(
         max_epochs=args.epochs,
