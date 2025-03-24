@@ -679,13 +679,13 @@ class ARModel(pl.LightningModule):
                 time=time_slice,
                 split=split,
                 category="state",
-            ).unstack("grid_index")
+            )  #.unstack("grid_index")
             da_target = self._create_dataarray_from_tensor(
                 tensor=target_slice,
                 time=time_slice,
                 split=split,
                 category="state",
-            ).unstack("grid_index")
+            )  #.unstack("grid_index")
 
             var_vmin = (
                 torch.minimum(

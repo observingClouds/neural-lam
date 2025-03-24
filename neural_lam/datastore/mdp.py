@@ -415,9 +415,9 @@ class MDPDatastore(BaseRegularGridDatastore):
                 "no state data found in datastore"
                 "returning grid shape from forcing data"
             )
-            da_grid_reference = self.unstack_grid_coords(self._ds["forcing"])
+            da_grid_reference = self._ds["forcing"]  #self.unstack_grid_coords(self._ds["forcing"])
         else:
-            da_grid_reference = self.unstack_grid_coords(self._ds["state"])
+            da_grid_reference = self._ds["state"]  #self.unstack_grid_coords(self._ds["state"])
         da_x, da_y = da_grid_reference.x, da_grid_reference.y
         assert da_x.ndim == da_y.ndim == 1
         return CartesianGridShape(x=da_x.size, y=da_y.size)

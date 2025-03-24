@@ -107,23 +107,33 @@ def plot_on_axis(
     gl.top_labels = False
     gl.right_labels = False
 
-    lats_lons = datastore.get_lat_lon("state")
+    lats_lons = np.rad2deg(datastore.get_lat_lon("state"))
     grid_shape = (
         datastore.grid_shape_state.x,
         datastore.grid_shape_state.y,
     )
-    lons = lats_lons[:, 0].reshape(grid_shape)
-    lats = lats_lons[:, 1].reshape(grid_shape)
+    # lons = lats_lons[:, 0].reshape(grid_shape)
+    # lats = lats_lons[:, 1].reshape(grid_shape)
 
-    im = ax.pcolormesh(
-        lons,
-        lats,
-        da.values.reshape(grid_shape),
+    # im = ax.pcolormesh(
+    #     lons,
+    #     lats,
+    #     da.values.reshape(grid_shape),
+    #     transform=ccrs.PlateCarree(),
+    #     vmin=vmin,
+    #     vmax=vmax,
+    #     cmap=cmap,
+    #     shading="auto",
+    # )
+    im = ax.scatter(
+        lats_lons[:, 0],
+        lats_lons[:, 1],
+        c=da.values,
+        s=10,
         transform=ccrs.PlateCarree(),
         vmin=vmin,
         vmax=vmax,
         cmap=cmap,
-        shading="auto",
     )
 
     if ax_title:
@@ -209,14 +219,7 @@ def plot_spatial_error(
     )
 
     error_grid = (
-        error.reshape(
-            [
-                datastore.grid_shape_state.x,
-                datastore.grid_shape_state.y,
-            ]
-        )
-        .cpu()
-        .numpy()
+        error.cpu().numpy()
     )
 
     im = plot_on_axis(
