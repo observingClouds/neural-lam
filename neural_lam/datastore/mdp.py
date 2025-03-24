@@ -500,9 +500,9 @@ class MDPDatastore(BaseRegularGridDatastore):
         if "latitude" in lookup_ds.coords and "longitude" in lookup_ds.coords:
             lon = lookup_ds.longitude
             lat = lookup_ds.latitude
-        elif "lat" in lookup_ds.coords and "lon" in lookup_ds.coords:
-            lon = lookup_ds.lon
-            lat = lookup_ds.lat
+        elif "clat" in lookup_ds.coords and "clon" in lookup_ds.coords:
+            lon = lookup_ds.clon
+            lat = lookup_ds.clat
         else:
             # Not saved, use method from BaseDatastore to derive from x/y
             return super().get_lat_lon(category)
