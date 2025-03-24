@@ -282,7 +282,7 @@ class MDPDatastore(BaseRegularGridDatastore):
         da_category = self._ds[category]
 
         # set multi-index for grid-index
-        da_category = da_category.set_index(grid_index=self.CARTESIAN_COORDS)
+        # da_category = da_category.set_index(grid_index=self.CARTESIAN_COORDS)
 
         temporal_dim = "analysis_time" if self.is_forecast else "time"
 
@@ -443,29 +443,38 @@ class MDPDatastore(BaseRegularGridDatastore):
 
         """
         # assume variables are stored in dimensions [grid_index, ...]
-        ds_category = self.unstack_grid_coords(da_or_ds=self._ds[category])
+        is_on_irregular_grid = True
+        if not is_on_irregular_grid:
+            ds_category = self.unstack_grid_coords(da_or_ds=self._ds[category])
 
-        da_xs = ds_category.x
-        da_ys = ds_category.y
+            da_xs = ds_category.x
+            da_ys = ds_category.y
 
-        assert da_xs.ndim == da_ys.ndim == 1, "x and y coordinates must be 1D"
+            assert da_xs.ndim == da_ys.ndim == 1, "x and y coordinates must be 1D"
 
-        da_x, da_y = xr.broadcast(da_xs, da_ys)
-        da_xy = xr.concat([da_x, da_y], dim="grid_coord")
+            da_x, da_y = xr.broadcast(da_xs, da_ys)
+            da_xy = xr.concat([da_x, da_y], dim="grid_coord")
 
-        if stacked:
-            da_xy = da_xy.stack(grid_index=self.CARTESIAN_COORDS).transpose(
-                "grid_index",
-                "grid_coord",
-            )
+            if stacked:
+                da_xy = da_xy.stack(grid_index=self.CARTESIAN_COORDS).transpose(
+                    "grid_index",
+                    "grid_coord",
+                )
+            else:
+                dims = [
+                    "x",
+                    "y",
+                    "grid_coord",
+                ]
+                da_xy = da_xy.transpose(*dims)
         else:
-            dims = [
-                "x",
-                "y",
-                "grid_coord",
-            ]
-            da_xy = da_xy.transpose(*dims)
-
+            da_x = self._ds[category].x
+            da_y = self._ds[category].y
+            da_xy = xr.concat([da_x, da_y], dim="grid_coord").transpose(
+                    "grid_index",
+                    "grid_coord",
+                )
+            
         return da_xy.values
 
     @functools.lru_cache
