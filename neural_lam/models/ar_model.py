@@ -733,9 +733,7 @@ class ARModel(pl.LightningModule):
 
                 example_i = self.plotted_examples
 
-                for var_name, fig in zip(
-                    self._datastore.get_vars_names("state"), var_figs
-                ):
+                for var_name, fig in var_figs.items():
 
                     # We need treat logging images differently for different
                     # loggers. WANDB can log multiple images to the same key,
@@ -903,13 +901,9 @@ class ARModel(pl.LightningModule):
                     ),
                     "lead_time": lead_time_h,
                 },
-                attrs={
-                    "wandb_run_name": wandb.run.name,
-                    "wandb_run_id": wandb.run.id,
-                },
             )
             # Save as pickle
-            output_path = os.path.join(wandb.run.dir, f"{prefix}_metrics.pkl")
+            output_path = os.path.join(self.logger.save_dir, f"{prefix}_metrics.pkl")
             with open(output_path, "wb") as f:
                 pickle.dump(metric_ds, f)
 
