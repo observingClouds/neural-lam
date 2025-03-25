@@ -473,6 +473,16 @@ class ARModel(pl.LightningModule):
         """
         prediction, target, pred_std, _ = self.common_step(batch)
 
+        entry_mses = metrics.mse(
+            prediction,
+            target,
+            pred_std,
+            sum_vars=False,
+        )  # (B, pred_steps, d_f)
+
+        # Compute mean RMSE for first prediction step
+        mean_rmse_ar_step_1 = torch.mean(torch.sqrt(entry_mses[:, 0, :]), dim=0)
+
         time_step_loss = torch.mean(
             self.loss(
                 prediction,
@@ -490,11 +500,17 @@ class ARModel(pl.LightningModule):
 
         # Log loss per time step forward and mean
         val_log_dict = {
-            f"val_loss_unroll{step}": time_step_loss[step - 1]
-            for step in self.args.val_steps_to_log
-            if step <= len(time_step_loss)
+            **{
+                f"val_loss_unroll{step}": time_step_loss[step - 1]
+                for step in self.args.val_steps_to_log
+                if step <= len(time_step_loss)
+            },
+            "val_mean_loss": mean_loss,
+            **{
+                f"val_rmse_{v}": mean_rmse_ar_step_1[i] for i, v in enumerate(self._datastore.get_vars_names("state"))
+            },
+            "val_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
-        val_log_dict["val_mean_loss"] = mean_loss
         self.log_dict(
             val_log_dict,
             on_step=False,
@@ -503,13 +519,6 @@ class ARModel(pl.LightningModule):
             batch_size=batch[0].shape[0],
         )
 
-        # Store MSEs
-        entry_mses = metrics.mse(
-            prediction,
-            target,
-            pred_std,
-            sum_vars=False,
-        )  # (B, pred_steps, d_f)
         self.val_metrics["mse"].append(entry_mses)
 
     def on_validation_epoch_end(self):
