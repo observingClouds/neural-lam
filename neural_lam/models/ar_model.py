@@ -356,6 +356,45 @@ class ARModel(pl.LightningModule):
             pred_std = self.per_var_std  # (d_f,)
 
         return prediction, pred_std
+    
+    def _sync2skip(self, flag_skip):
+        # see below:
+        # https://github.com/Lightning-AI/lightning/issues/5243#issuecomment-1552650013
+        # gathering a tensor across all workers and then reduce it using or
+        world_size = torch.distributed.get_world_size()
+        torch.distributed.barrier()
+        # now gather
+        result = [torch.zeros_like(flag_skip) for _ in range(world_size)]
+        torch.distributed.all_gather(result, flag_skip)
+        any_invalid = torch.sum(torch.stack(result)).bool().item()
+        return any_invalid
+
+    def _check_nan_inf_loss(self, loss, batch_id=None):
+        mask_nan_inf = torch.logical_or(torch.isnan(loss), ~torch.isfinite(loss))
+        if torch.any(mask_nan_inf):
+            # if any is invalid then we must flag this to all DDP processes
+            flag_skip = torch.ones((), device=loss.device, dtype=torch.bool)
+        else:
+            flag_skip = torch.zeros((), device=loss.device, dtype=torch.bool)
+
+        # sub-optimal but will do, till they fix it in
+        # https://github.com/Lightning-AI/lightning/issues/5243#issuecomment-1552650013
+        any_invalid = self._sync2skip(flag_skip)
+        if any_invalid:
+            if self.nan_countdown >= 100:
+                raise RuntimeError(
+                    "Too many NaNs loss iterations encountered, stopping!"
+                )
+            logger.warning(
+                f"NaN loss in batch {batch_id} of epoch {self.current_epoch}, "
+                f"skipping the whole batch across all workers."
+            )
+            self.nan_countdown += 1
+        else:
+            # reset counter
+            self.nan_countdown = 1
+
+        return any_invalid
 
     def common_step(self, batch):
         """
@@ -399,6 +438,11 @@ class ARModel(pl.LightningModule):
             )
         )
 
+        any_invalid = self._check_nan_inf_loss(batch_loss)
+        if any_invalid:
+            # skip this batch altogether on all workers.
+            return None
+
         log_dict = {"train_loss": batch_loss}
         self.log_dict(
             log_dict,
@@ -438,6 +482,11 @@ class ARModel(pl.LightningModule):
             dim=0,
         )  # (time_steps-1)
         mean_loss = torch.mean(time_step_loss)
+
+        any_invalid = self._check_nan_inf_loss(mean_loss, batch_idx)
+        if any_invalid:
+            # skip this batch altogether on all workers.
+            return None
 
         # Log loss per time step forward and mean
         val_log_dict = {
@@ -808,7 +857,7 @@ class ARModel(pl.LightningModule):
             for var_i, timesteps in self.args.var_leads_metrics_watch.items():
                 var_name = var_names[var_i]
                 for step in timesteps:
-                    key = f"{full_log_name}_{var_name}_step_{step}"
+                    key = f"{full_log_name}_{var_name}_step_{step:04d}"
                     log_dict[key] = metric_tensor[step - 1, var_i]
 
         return log_dict
@@ -956,7 +1005,7 @@ class ARModel(pl.LightningModule):
             )
             os.makedirs(pdf_loss_maps_dir, exist_ok=True)
             for t_i, fig in zip(self.args.val_steps_to_log, pdf_loss_map_figs):
-                fig.savefig(os.path.join(pdf_loss_maps_dir, f"loss_t{t_i}.pdf"))
+                fig.savefig(os.path.join(pdf_loss_maps_dir, f"loss_t{t_i:04d}.pdf"))
             # save mean spatial loss as .pt file also
             torch.save(
                 mean_spatial_loss.cpu(),

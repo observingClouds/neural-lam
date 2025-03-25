@@ -56,7 +56,7 @@ class CustomMLFlowLogger(pl.loggers.MLFlowLogger):
         from PIL import Image
 
         if step is not None:
-            key = f"{key}_{step}"
+            key = f"{key}_{step:04d}"
 
         # Need to save the image to a temporary file, then log that file
         # mlflow.log_image, should do this automatically, but is buggy
