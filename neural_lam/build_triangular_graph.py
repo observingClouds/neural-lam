@@ -26,7 +26,7 @@ def _get_max_edge_distance(mesh):
   return edge_distances.max()
 
 
-def main():
+def main(input_args=None):
     parser = argparse.ArgumentParser(
         description="Triangular graph generation using weather-models-graph",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -98,7 +98,7 @@ def main():
         help="Allow disconnected nodes in g2m. This is generally a bad idea and"
         "should only be used for testing purposes.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(input_args)
 
     _, datastore, datastore_boundary = load_config_and_datastores(
         config_path=args.config_path
