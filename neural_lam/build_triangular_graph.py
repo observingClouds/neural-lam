@@ -105,7 +105,7 @@ def main(input_args=None):
     )
 
     # Set up dir for saving graph
-    save_dir_path = os.path.join(datastore.root_path, "graphs", args.graph_name)
+    save_dir_path = os.path.join(datastore.root_path, "graph", args.graph_name)
     os.makedirs(save_dir_path, exist_ok=True)
 
     # Load grid positions

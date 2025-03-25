@@ -34,7 +34,7 @@ class BaseGraphModel(ARModel):
         )
 
         # Load graph with static features
-        graph_dir_path = datastore.root_path / "graphs" / args.graph_name
+        graph_dir_path = datastore.root_path / "graph" / args.graph_name
         self.hierarchical, graph_ldict = utils.load_graph(
             graph_dir_path=graph_dir_path,
             datastore=datastore,
