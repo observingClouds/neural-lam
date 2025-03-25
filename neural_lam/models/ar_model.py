@@ -857,7 +857,7 @@ class ARModel(pl.LightningModule):
             for var_i, timesteps in self.args.var_leads_metrics_watch.items():
                 var_name = var_names[var_i]
                 for step in timesteps:
-                    key = f"{full_log_name}_{var_name}_step_{step}"
+                    key = f"{full_log_name}_{var_name}_step_{step:04d}"
                     log_dict[key] = metric_tensor[step - 1, var_i]
 
         return log_dict
@@ -1005,7 +1005,7 @@ class ARModel(pl.LightningModule):
             )
             os.makedirs(pdf_loss_maps_dir, exist_ok=True)
             for t_i, fig in zip(self.args.val_steps_to_log, pdf_loss_map_figs):
-                fig.savefig(os.path.join(pdf_loss_maps_dir, f"loss_t{t_i}.pdf"))
+                fig.savefig(os.path.join(pdf_loss_maps_dir, f"loss_t{t_i:04d}.pdf"))
             # save mean spatial loss as .pt file also
             torch.save(
                 mean_spatial_loss.cpu(),
