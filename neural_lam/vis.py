@@ -129,7 +129,7 @@ def plot_on_axis(
         lats_lons[:, 0],
         lats_lons[:, 1],
         c=da.values,
-        s=10,
+        s=0.05,
         transform=ccrs.PlateCarree(),
         vmin=vmin,
         vmax=vmax,
