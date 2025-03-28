@@ -581,7 +581,7 @@ class ARModel(pl.LightningModule):
             # First entry in da_pred.coords["time"] is time of first prediction,
             # so init time of forecast is one time step before
             t0 = da_pred.coords["time"].values[0] - np.array(
-                self.step_length, dtype="timedelta64[h]"
+                self.step_length, dtype="timedelta64[s]"
             )
             da_pred.coords["start_time"] = t0
             da_pred.coords["elapsed_forecast_duration"] = da_pred.time - t0
@@ -940,7 +940,7 @@ class ARModel(pl.LightningModule):
             lead_time_i = np.arange(num_steps) + 1  # Lead time in index
             lead_time_h = (
                 (self.step_length * lead_time_i)
-                .astype("timedelta64[h]")
+                .astype("timedelta64[s]")
                 .astype("timedelta64[ns]")
             )  # Lead time in hours -> in ns for xr
             metric_ds = xr.Dataset(
