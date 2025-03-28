@@ -438,10 +438,10 @@ class ARModel(pl.LightningModule):
             )
         )
 
-        any_invalid = self._check_nan_inf_loss(batch_loss)
-        if any_invalid:
-            # skip this batch altogether on all workers.
-            return None
+        #any_invalid = self._check_nan_inf_loss(batch_loss)
+        #if any_invalid:
+        #    # skip this batch altogether on all workers.
+        #    return None
 
         log_dict = {"train_loss": batch_loss}
         self.log_dict(
@@ -493,10 +493,10 @@ class ARModel(pl.LightningModule):
         )  # (time_steps-1)
         mean_loss = torch.mean(time_step_loss)
 
-        any_invalid = self._check_nan_inf_loss(mean_loss, batch_idx)
-        if any_invalid:
-            # skip this batch altogether on all workers.
-            return None
+        #any_invalid = self._check_nan_inf_loss(mean_loss, batch_idx)
+        #if any_invalid:
+        #    # skip this batch altogether on all workers.
+        #    return None
 
         # Log loss per time step forward and mean
         val_log_dict = {
