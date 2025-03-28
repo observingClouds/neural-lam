@@ -283,7 +283,7 @@ def main():
 
     # Load graph data
     graph_dir_path = os.path.join(
-        datastore.root_path, "graphs", args.graph_name
+        datastore.root_path, "graph", args.graph_name
     )
     hierarchical, graph_ldict = utils.load_graph(
         graph_dir_path=graph_dir_path,
