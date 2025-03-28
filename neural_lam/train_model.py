@@ -425,19 +425,28 @@ def main(input_args=None):
 
     if args.logger_run_name:
         run_name = args.logger_run_name
+    elif args.load:
+        last_ckpt = torch.load(args.load, weights_only=False)
+        path_last_ckpt = Path(list(last_ckpt['callbacks'].values())[0]['last_model_path'])
+        run_name = path_last_ckpt.parts[-2]
+        if args.eval:
+            run_name = run_name.replace("train-","eval-")
     else:
         run_name = (
             f"{prefix}{args.model}-{args.processor_layers}x{args.hidden_dim}-"
             f"{time.strftime('%m_%d_%H')}-{random_run_id:04d}"
         )
+
     callbacks = []
     # Checkpoint for minimum val_mean_loss + last
     callbacks.append(
         pl.callbacks.ModelCheckpoint(
             dirpath=f"saved_models/{run_name}",
-            filename="min_val_mean_loss",
+            filename="min_val_mean_loss_{epoch}",
             monitor="val_mean_loss",
             mode="min",
+            save_top_k=-1,
+            every_n_epochs=20,
             save_last=True,
         )
     )
