@@ -128,6 +128,7 @@ def create_edge_plot(
         mode="lines",
         line={"color": color, "width": width},
         name=label,
+        visible=False,
     )
 
 
@@ -162,6 +163,7 @@ def create_node_plot(
         mode="markers",
         marker={"color": color, "size": size},
         name=f"{label} (subsampled)" if subsample else label,
+        visible=False,
     )
 
 
