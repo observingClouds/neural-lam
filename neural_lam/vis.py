@@ -107,7 +107,7 @@ def plot_on_axis(
     gl.top_labels = False
     gl.right_labels = False
 
-    lats_lons = np.rad2deg(datastore.get_lat_lon("state"))
+    lats_lons = datastore.get_lat_lon("state")
     grid_shape = (
         datastore.grid_shape_state.x,
         datastore.grid_shape_state.y,

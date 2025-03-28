@@ -504,9 +504,16 @@ class MDPDatastore(BaseRegularGridDatastore):
         elif "clat" in lookup_ds.coords and "clon" in lookup_ds.coords:
             lon = lookup_ds.clon
             lat = lookup_ds.clat
+        elif "lat" in lookup_ds.coords and "lon" in lookup_ds.coords:
+            lon = lookup_ds.lon
+            lat = lookup_ds.lat
         else:
             # Not saved, use method from BaseDatastore to derive from x/y
             return super().get_lat_lon(category)
+
+        if max(lon) < 1 and max(lat) < 1:
+            lon = np.rad2deg(lon)
+            lat = np.rad2deg(lat)
 
         coords = np.stack((lon.values, lat.values), axis=1)
         return coords
