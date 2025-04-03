@@ -575,8 +575,8 @@ class ARModel(pl.LightningModule):
             # Unstack grid coords if necessary, this also avoids the need to
             # try to store a MultiIndex zarr dataset which is not supported by
             # xarray
-            if isinstance(self._datastore, BaseRegularGridDatastore):
-                da_pred = self._datastore.unstack_grid_coords(da_pred)
+            #if isinstance(self._datastore, BaseRegularGridDatastore):
+            #    da_pred = self._datastore.unstack_grid_coords(da_pred)
 
             # First entry in da_pred.coords["time"] is time of first prediction,
             # so init time of forecast is one time step before
