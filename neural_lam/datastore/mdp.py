@@ -511,7 +511,7 @@ class MDPDatastore(BaseRegularGridDatastore):
             # Not saved, use method from BaseDatastore to derive from x/y
             return super().get_lat_lon(category)
 
-        if max(lon) < 1 and max(lat) < 1:
+        if np.max(lon) < 1 and np.max(lat) < 1:
             lon = np.rad2deg(lon)
             lat = np.rad2deg(lat)
 

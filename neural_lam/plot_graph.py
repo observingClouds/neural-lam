@@ -128,7 +128,7 @@ def create_edge_plot(
         mode="lines",
         line={"color": color, "width": width},
         name=label,
-        visible=False,
+        visible="legendonly",
     )
 
 
@@ -163,7 +163,7 @@ def create_node_plot(
         mode="markers",
         marker={"color": color, "size": size},
         name=f"{label} (subsampled)" if subsample else label,
-        visible=False,
+        visible="legendonly",
     )
 
 
@@ -306,7 +306,7 @@ def main():
         # Define corner in terms of last point
         # Note: Could we do something more clever?
         corner = interior_lat_lon[-1]
-        lon_corner, lat_corner = corner
+        lon_corner, lat_corner = [-59.5, 12.66]
 
         def corner_filter_func(pos_lat_lon):
             """

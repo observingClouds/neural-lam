@@ -107,66 +107,66 @@ def get_icosahedron() -> TriangularMesh:
          counterclock-wise when looking from the outside).
 
   """
-  phi = (1 + np.sqrt(5)) / 2
-  vertices = []
-  for c1 in [1., -1.]:
-    for c2 in [phi, -phi]:
-      vertices.append((c1, c2, 0.))
-      vertices.append((0., c1, c2))
-      vertices.append((c2, 0., c1))
+  def calculate_m():
+      phi = (1 + np.sqrt(5)) / 2
+      m = 90 - (180 / np.pi) * np.arctan(np.sqrt(1 + phi**2 + phi**4) / phi)
+      return m
 
-  vertices = np.array(vertices, dtype=np.float32)
-  vertices /= np.linalg.norm([1., phi])
+  m = calculate_m()
+  
+  # Define the vertices based on the specified longitude/latitude positions
+  vertices = np.array([
+      [-180, 90],   # Vertex 1
+      [-180, -90],  # Vertex 2
+      [0, -m],      # Vertex 3
+      [-180, m],    # Vertex 4
+      [36, m],      # Vertex 5
+      [-36, m],     # Vertex 6
+      [72, -m],     # Vertex 7
+      [-72, -m],    # Vertex 8
+      [108, m],     # Vertex 9
+      [-108, m],    # Vertex 10
+      [144, -m],    # Vertex 11
+      [-144, -m]     # Vertex 12
+  ])
+  
+  # Convert latitude/longitude to Cartesian coordinates
+  # Assuming the radius of the sphere is 1 for simplicity
+  radius = 1
+  cartesian_vertices = np.array([
+      [
+          radius * np.cos(np.radians(lat)) * np.cos(np.radians(lon)),
+          radius * np.cos(np.radians(lat)) * np.sin(np.radians(lon)),
+          radius * np.sin(np.radians(lat))
+      ]
+      for lon, lat in vertices
+  ])
+  
+  # Define the faces of the icosahedron
+  faces = [
+      (0, 8, 3),  # cc
+      (0, 5, 4),  # cc
+      (0, 9, 5),  # cc
+      (0, 4, 8),  # cc
+      (0, 3, 9),  # cc
+      (4, 5, 2),  # cc
+      (4, 2, 6),  # cc
+      (4, 6, 8),  # cc
+      (8, 6, 10), # cc
+      (8, 10, 3), # cc
+      (2, 5, 7),  # cc
+      (5, 9, 7),  # cc
+      (11, 3, 10), # cc
+      (3, 11, 9), # cc
+      (9, 11, 7), # cc
+      (2, 7, 1),  # cc
+      (6, 2, 1),  # cc
+      (6, 1, 10), # cc
+      (1, 11, 10), # cc
+      (1, 7, 11), # cc
+  ]
 
-  # I did this manually, checking the orientation one by one.
-  faces = [(0, 1, 2),
-           (0, 6, 1),
-           (8, 0, 2),
-           (8, 4, 0),
-           (3, 8, 2),
-           (3, 2, 7),
-           (7, 2, 1),
-           (0, 4, 6),
-           (4, 11, 6),
-           (6, 11, 5),
-           (1, 5, 7),
-           (4, 10, 11),
-           (4, 8, 10),
-           (10, 8, 3),
-           (10, 3, 9),
-           (11, 10, 9),
-           (11, 9, 5),
-           (5, 9, 7),
-           (9, 3, 7),
-           (1, 6, 5),
-           ]
-
-  # By default the top is an aris parallel to the Y axis.
-  # Need to rotate around the y axis by half the supplementary to the
-  # angle between faces divided by two to get the desired orientation.
-  #                          /O\  (top arist)
-  #                     /          \                           Z
-  # (adjacent face)/                    \  (adjacent face)     ^
-  #           /     angle_between_faces      \                 |
-  #      /                                        \            |
-  #  /                                                 \      YO-----> X
-  # This results in:
-  #  (adjacent faceis now top plane)
-  #  ----------------------O\  (top arist)
-  #                           \
-  #                             \
-  #                               \     (adjacent face)
-  #                                 \
-  #                                   \
-  #                                     \
-
-  angle_between_faces = 2 * np.arcsin(phi / np.sqrt(3))
-  rotation_angle = (np.pi - angle_between_faces) / 2
-  rotation = transform.Rotation.from_euler(seq="y", angles=rotation_angle)
-  rotation_matrix = rotation.as_matrix()
-  vertices = np.dot(vertices, rotation_matrix)
-
-  return TriangularMesh(vertices=vertices.astype(np.float32),
+  return TriangularMesh(vertices=cartesian_vertices.astype(np.float32),
                         faces=np.array(faces, dtype=np.int32))
 
 
