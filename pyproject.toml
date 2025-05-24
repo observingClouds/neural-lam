@@ -30,7 +30,7 @@ dependencies = [
     "spherical-geometry>=1.3.2",
     "gcsfs>=2025.3.2",
     "jinja2>=3.1.6",
-    "weather-model-graphs @ git+https://github.com/joeloskarsson/weather-model-graphs.git@decoding_mask"
+    "weather-model-graphs @ git+https://github.com/ealerskans/weather-model-graphs.git@decoding_mask"
 ]
 requires-python = ">=3.10"
 
