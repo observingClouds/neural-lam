@@ -371,6 +371,7 @@ class ARModel(pl.LightningModule):
 
     def _check_nan_inf_loss(self, loss, batch_id=None):
         mask_nan_inf = torch.logical_or(torch.isnan(loss), ~torch.isfinite(loss))
+        logger.warning(f"loss has nans: {mask_nan_inf}")
         if torch.any(mask_nan_inf):
             # if any is invalid then we must flag this to all DDP processes
             flag_skip = torch.ones((), device=loss.device, dtype=torch.bool)
