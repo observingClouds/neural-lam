@@ -18,7 +18,7 @@ from typing import List, NamedTuple, Sequence, Tuple
 
 import numpy as np
 from scipy.spatial import transform
-
+from tqdm import tqdm
 
 class TriangularMesh(NamedTuple):
   """Data structure for triangular meshes.
@@ -181,7 +181,7 @@ def _two_split_unit_sphere_triangle_faces(
   new_vertices_builder = _ChildVerticesBuilder(triangular_mesh.vertices)
 
   new_faces = []
-  for ind1, ind2, ind3 in triangular_mesh.faces:
+  for ind1, ind2, ind3 in tqdm(triangular_mesh.faces):
     # Transform each triangular face into 4 triangles,
     # preserving the orientation.
     #                    ind3
