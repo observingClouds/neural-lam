@@ -306,7 +306,7 @@ def main():
         # Define corner in terms of last point
         # Note: Could we do something more clever?
         corner = interior_lat_lon[-1]
-        lon_corner, lat_corner = [-59.5, 12.66]
+        lon_corner, lat_corner = [(-59.5 + 360) % 360, 12.66]
 
         def corner_filter_func(pos_lat_lon):
             """
