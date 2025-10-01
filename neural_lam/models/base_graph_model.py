@@ -42,10 +42,11 @@ class BaseGraphModel(ARModel):
         for name, attr_value in graph_ldict.items():
             # NOTE: It would be good to rescale mesh node position features in
             # exactly the same way as grid node position static features.
-            if name == "mesh_static_features":
-                max_coord = datastore.get_xy("state").max()
-                # Rescale by dividing by maximum coordinate in interior
-                attr_value /= max_coord
+            # if name == "mesh_static_features":
+            #     import ipdb;ipdb.set_trace()
+            #     max_coord = datastore.get_xy("state").ptp(axis='grid_index')
+            #     # Rescale by dividing by maximum coordinate in interior
+            #     attr_value /= max_coord
 
             # Make BufferLists module members and register tensors as buffers
             if isinstance(attr_value, torch.Tensor):
