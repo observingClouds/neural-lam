@@ -469,8 +469,12 @@ class MDPDatastore(BaseRegularGridDatastore):
                 ]
                 da_xy = da_xy.transpose(*dims)
         else:
-            da_x = self._ds[category].x
-            da_y = self._ds[category].y
+            try:
+                da_x = self._ds[category].x
+                da_y = self._ds[category].y
+            except AttributeError:
+                da_x = self._ds[category].lon #xr.DataArray(range(len(self._ds['grid_index'])), dims='grid_index')
+                da_y = self._ds[category].lat #xr.DataArray(range(len(self._ds['grid_index'])), dims='grid_index')
             da_xy = xr.concat([da_x, da_y], dim="grid_coord").transpose(
                     "grid_index",
                     "grid_coord",
