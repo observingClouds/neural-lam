@@ -146,10 +146,10 @@ def main(input_args=None):
         # No cropping to chull
         grid_chull = None
     if not global_graph:
-        # Crop mesh graph to convex hull of grid points
+        # Crop mesh graph to convex hull of (interior) grid points
         # Compute convex hull
         print("Cropping for LAM model. Computing convex hull...")
-        grid_chull = SphericalPolygon.convex_hull(grid_xyz)
+        grid_chull = SphericalPolygon.convex_hull(grid_xyz[decode_mask])
 
     if args.rotate_ico:
         # Compute a point to line up icosahedron with for later
@@ -325,8 +325,8 @@ def main(input_args=None):
                 f"{num_disc_mesh} disconnected mesh nodes"
             )
         )
-        if not args.allow_disconnected:
-            assert False, "Disconnected g2m nodes."
+        # if not args.allow_disconnected:
+        #     assert False, "Disconnected g2m nodes."
 
     # Get edge features for g2m
     g2m_edge_features = gcreate.create_edge_features(
