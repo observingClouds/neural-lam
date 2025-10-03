@@ -10,12 +10,8 @@ sweeps
 *.html
 *.zarr
 *slurm*
-*.png
-*.csv
-*.tex
-*wfigures.ipynb
-*.pdf
-*.ipynb_checkpoints
+docs/notebooks/plots
+docs/notebooks/tables
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
