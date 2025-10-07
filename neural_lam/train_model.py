@@ -424,15 +424,13 @@ def main(input_args=None):
         )
 
     callbacks = []
-    # Checkpoint for minimum val_mean_loss + last
+    # Checkpoint each 2 epochs
     callbacks.append(
         pl.callbacks.ModelCheckpoint(
             dirpath=f"saved_models/{run_name}",
-            filename="min_val_mean_loss_{epoch}",
-            monitor="val_mean_loss",
-            mode="min",
+            filename="{epoch:02d}-step{step}",
             save_top_k=-1,
-            every_n_epochs=20,
+            every_n_epochs=2,
             save_last=True,
         )
     )
@@ -452,7 +450,7 @@ def main(input_args=None):
             filename=f"min_val_loss_unroll{monitored_unroll_step}",
             monitor=f"val_loss_unroll{monitored_unroll_step}",
             mode="min",
-            save_last=False,  # Only need one save_last=True
+            save_last=True,  # Only need one save_last=True
         )
     )
 
