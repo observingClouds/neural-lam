@@ -428,29 +428,10 @@ def main(input_args=None):
     callbacks.append(
         pl.callbacks.ModelCheckpoint(
             dirpath=f"saved_models/{run_name}",
-            filename="{epoch:02d}-step{step}",
+            filename="{epoch:03d}-{step:07d}",
             save_top_k=-1,
             every_n_epochs=2,
             save_last=True,
-        )
-    )
-    # Checkpoint for min val loss at step ar_steps_train
-    possible_monitor_steps = [
-        step for step in args.val_steps_to_log if step <= args.ar_steps_train
-    ]
-    assert possible_monitor_steps, (
-        "Can not save checkpoints as no validation loss is logged for "
-        f"step {args.ar_steps_train} or earlier."
-    )
-    # Choose step closest to ar_steps_train
-    monitored_unroll_step = max(possible_monitor_steps)
-    callbacks.append(
-        pl.callbacks.ModelCheckpoint(
-            dirpath=f"saved_models/{run_name}",
-            filename=f"min_val_loss_unroll{monitored_unroll_step}",
-            monitor=f"val_loss_unroll{monitored_unroll_step}",
-            mode="min",
-            save_last=True,  # Only need one save_last=True
         )
     )
 
