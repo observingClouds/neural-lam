@@ -1,6 +1,5 @@
 # Standard library
 from pathlib import Path
-from unittest.mock import MagicMock
 
 # Third-party
 import numpy as np
@@ -267,10 +266,6 @@ def test_single_batch(datastore_name, datastore_boundary_name, split):
         datastore_boundary=datastore_boundary,
         config=config,
     )  # noqa
-    model.trainer = MagicMock()
-    optimizer_mock = MagicMock()
-    optimizer_mock.param_groups = [{"lr": 0.001}]
-    model.trainer.optimizers = [optimizer_mock]
 
     model_device = model.to(device_name)
     data_loader = DataLoader(dataset, batch_size=2)

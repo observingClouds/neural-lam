@@ -27,10 +27,10 @@ DATASTORE_EXAMPLES_ROOT_PATH = Path("tests/datastore_examples")
 # Initializing variables for the s3 client
 S3_BUCKET_NAME = "mllam-testdata"
 S3_ENDPOINT_URL = "https://object-store.os-api.cci1.ecmwf.int"
-S3_FILE_PATH = "neural-lam/npy/meps_example_reduced.v0.3.0.tar.gz"
+S3_FILE_PATH = "neural-lam/npy/meps_example_reduced.v0.2.0.zip"
 S3_FULL_PATH = "/".join([S3_ENDPOINT_URL, S3_BUCKET_NAME, S3_FILE_PATH])
 TEST_DATA_KNOWN_HASH = (
-    "af16d87099944dda152cc988ce347173da68c56d3739c86ec53c8132981a93e6"
+    "7ff2e07e04cfcd77631115f800c9d49188bb2a7c2a2777da3cea219f926d0c86"
 )
 
 
@@ -42,9 +42,9 @@ def download_meps_example_reduced_dataset():
     pooch.retrieve(
         url=S3_FULL_PATH,
         known_hash=TEST_DATA_KNOWN_HASH,
-        processor=pooch.Untar(extract_dir=""),
+        processor=pooch.Unzip(extract_dir=""),
         path=root_path,
-        fname=S3_FILE_PATH.split("/")[-1],
+        fname="meps_example_reduced.zip",
     )
 
     config_path = dataset_path / "meps_example_reduced.datastore.yaml"
