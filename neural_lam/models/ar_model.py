@@ -432,20 +432,44 @@ class ARModel(pl.LightningModule):
         prediction, target, pred_std, _ = self.common_step(batch)
 
         # Compute loss - mean over unrolled times and batch
-        batch_loss = torch.mean(
+        time_step_loss = torch.mean(
             self.loss(
                 prediction,
                 target,
                 pred_std,
-            )
+            ),
+            dim=0,
         )
+        batch_loss = torch.mean(time_step_loss)
 
         #any_invalid = self._check_nan_inf_loss(batch_loss)
         #if any_invalid:
         #    # skip this batch altogether on all workers.
         #    return None
 
-        log_dict = {"train_loss": batch_loss}
+        entry_mses = metrics.mse(
+            prediction,
+            target,
+            pred_std,
+            sum_vars=False,
+        )  # (B, pred_steps, d_f)
+
+        # Compute mean RMSE for first prediction step
+        mean_rmse_ar_step_1 = torch.mean(torch.sqrt(entry_mses[:, 0, :]), dim=0)
+
+        log_dict = {
+            **{
+                f"train_loss_unroll{step}": time_step_loss[step - 1]
+                for step in self.args.val_steps_to_log
+                if step <= len(time_step_loss)
+            },
+            "train_mean_loss": batch_loss,
+            **{
+                f"train_rmse_{v}": mean_rmse_ar_step_1[i] for i, v in enumerate(self._datastore.get_vars_names("state"))
+            },
+            "train_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
+        }
+
         self.log_dict(
             log_dict,
             prog_bar=True,
