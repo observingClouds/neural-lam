@@ -283,6 +283,10 @@ In `scripts.danra_build_graphs.sh` and `scripts.cosmo_build_graphs.sh` you can f
 
 ## Logging your experiments
 
+The graph-related files are stored in a directory called `graphs`.
+
+## Logging your experiments
+
 ### Weights & Biases Integration
 The project is fully integrated with [Weights & Biases](https://www.wandb.ai/) (W&B) for logging and visualization, but can just as easily be used without it.
 When W&B is used, training configuration, training/test statistics and plots are sent to the W&B servers and made available in an interactive web interface.

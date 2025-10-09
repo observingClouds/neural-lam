@@ -44,14 +44,18 @@ class ARModel(pl.LightningModule):
         self._datastore = datastore
         num_state_vars = datastore.get_num_data_vars(category="state")
         num_forcing_vars = datastore.get_num_data_vars(category="forcing")
-
-        num_past_forcing_steps = args.num_past_forcing_steps
-        num_future_forcing_steps = args.num_future_forcing_steps
-
-        # Load static features for interior
+        # Load static features standardized
         da_static_features = datastore.get_dataarray(
             category="static", split=None, standardize=True
         )
+        da_state_stats = datastore.get_standardization_dataarray(
+            category="state"
+        )
+        da_boundary_mask = datastore.boundary_mask
+        num_past_forcing_steps = args.num_past_forcing_steps
+        num_future_forcing_steps = args.num_future_forcing_steps
+
+        # Load static features for grid/data,
         self.register_buffer(
             "interior_static_features",
             torch.tensor(da_static_features.values, dtype=torch.float32),
@@ -69,15 +73,14 @@ class ARModel(pl.LightningModule):
             "state_std": torch.tensor(
                 da_state_stats.state_std.values, dtype=torch.float32
             ),
-            # Change stats below to be for diff of standardized variables
+            # Note that the one-step-diff stats (diff_mean and diff_std) are
+            # for differences computed on standardized data
             "diff_mean": torch.tensor(
-                da_state_stats.state_diff_mean.values
-                / da_state_stats.state_std.values,
+                da_state_stats.state_diff_mean_standardized.values,
                 dtype=torch.float32,
             ),
             "diff_std": torch.tensor(
-                da_state_stats.state_diff_std.values
-                / da_state_stats.state_std.values,
+                da_state_stats.state_diff_std_standardized.values,
                 dtype=torch.float32,
             ),
         }
@@ -309,9 +312,16 @@ class ARModel(pl.LightningModule):
     def unroll_prediction(self, init_states, forcing, boundary_forcing):
         """
         Roll out prediction taking multiple autoregressive steps with model
-        init_states: (B, 2, num_interior_nodes, d_f)
-        forcing: (B, pred_steps, num_interior_nodes, d_static_f)
-        boundary_forcing: (B, pred_steps, num_boundary_nodes, d_boundary_f)
+        init_states: (B, 2, num_interior_nodes, d_f) forcing_features: (B,
+        pred_steps, num_interior_nodes, d_static_f) true_states: (B, pred_steps,
+        num_interior_nodes, d_f)
+
+        Returns
+        -------
+        torch.Tensor(B, pred_steps, num_interior_nodes, d_f):
+            The prediction
+        torch.Tensor(B, pred_steps, num_interior_nodes, d_f) or torch.Tensor(d_f,)
+            The prediction standard deviation or per-variable standard deviation
         """
         prev_prev_state = init_states[:, 0]
         prev_state = init_states[:, 1]
@@ -398,45 +408,32 @@ class ARModel(pl.LightningModule):
 
         return any_invalid
 
-    def common_step(self, batch):
-        """
-        Predict on single batch
-        batch consists of:
-        init_states: (B, 2, num_interior_nodes, d_features)
-        target_states: (B, pred_steps, num_interior_nodes, d_features)
-        forcing: (B, pred_steps, num_interior_nodes, d_forcing),
-        boundary_forcing:
-            (B, pred_steps, num_boundary_nodes, d_boundary_forcing),
-            where index 0 corresponds to index 1 of init_states
-        """
-        (
-            init_states,
-            target_states,
-            forcing,
-            boundary_forcing,
-            batch_times,
-        ) = batch
+    def training_step(self, batch):
+        """Train on single batch"""
+        init_states, target_states, forcing_features, _ = batch
 
         prediction, pred_std = self.unroll_prediction(
-            init_states, forcing, boundary_forcing
-        )  # (B, pred_steps, num_interior_nodes, d_f)
-        # prediction: (B, pred_steps, num_interior_nodes, d_f) pred_std: (B,
-        # pred_steps, num_interior_nodes, d_f) or (d_f,)
+            init_states, forcing_features, target_states
+        )
 
-        return prediction, target_states, pred_std, batch_times
+        entry_mses = metrics.mse(
+            prediction,
+            target_states,
+            pred_std,
+            mask=self.interior_mask_bool,
+            sum_vars=False,
+        )  # (B, pred_steps, d_f)
 
-    def training_step(self, batch):
-        """
-        Train on single batch
-        """
-        prediction, target, pred_std, _ = self.common_step(batch)
+        # Compute mean RMSE for first prediction step
+        mean_rmse_ar_step_1 = torch.mean(torch.sqrt(entry_mses[:, 0, :]), dim=0)
 
         # Compute loss - mean over unrolled times and batch
         batch_loss = torch.mean(
             self.loss(
                 prediction,
-                target,
+                target_states,
                 pred_std,
+                mask=self.interior_mask_bool,
             )
         )
 
@@ -445,9 +442,19 @@ class ARModel(pl.LightningModule):
         #    # skip this batch altogether on all workers.
         #    return None
 
-        log_dict = {"train_loss": batch_loss}
+        # Logging
+        train_log_dict = {
+            "train_loss": batch_loss,
+            **{
+                f"train_rmse_{v}": mean_rmse_ar_step_1[i]
+                for (i, v) in enumerate(
+                    self._datastore.get_vars_names(category="state")
+                )
+            },
+            "train_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
+        }
         self.log_dict(
-            log_dict,
+            train_log_dict,
             prog_bar=True,
             on_step=True,
             on_epoch=True,
@@ -473,7 +480,22 @@ class ARModel(pl.LightningModule):
         """
         Run validation on single batch
         """
-        prediction, target, pred_std, _ = self.common_step(batch)
+        init_states, target_states, forcing_features, _ = batch
+
+        prediction, pred_std = self.unroll_prediction(
+            init_states, forcing_features, target_states
+        )
+
+        entry_mses = metrics.mse(
+            prediction,
+            target_states,
+            pred_std,
+            mask=self.interior_mask_bool,
+            sum_vars=False,
+        )  # (B, pred_steps, d_f)
+
+        # Compute mean RMSE for first prediction step
+        mean_rmse_ar_step_1 = torch.mean(torch.sqrt(entry_mses[:, 0, :]), dim=0)
 
         entry_mses = metrics.mse(
             prediction,
@@ -488,8 +510,9 @@ class ARModel(pl.LightningModule):
         time_step_loss = torch.mean(
             self.loss(
                 prediction,
-                target,
+                target_states,
                 pred_std,
+                mask=self.interior_mask_bool,
             ),
             dim=0,
         )  # (time_steps-1)
@@ -508,8 +531,12 @@ class ARModel(pl.LightningModule):
                 if step <= len(time_step_loss)
             },
             "val_mean_loss": mean_loss,
+            # Log mean RMSE for first prediction step and learning rate
             **{
-                f"val_rmse_{v}": mean_rmse_ar_step_1[i] for i, v in enumerate(self._datastore.get_vars_names("state"))
+                f"val_rmse_{v}": mean_rmse_ar_step_1[i]
+                for (i, v) in enumerate(
+                    self._datastore.get_vars_names(category="state")
+                )
             },
             "val_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
@@ -627,26 +654,50 @@ class ARModel(pl.LightningModule):
         Run test on single batch
         """
         # TODO Here batch_times can be used for plotting routines
-        prediction, target, pred_std, batch_times = self.common_step(batch)
-        # prediction: (B, pred_steps, num_interior_nodes, d_f) pred_std: (B,
-        # pred_steps, num_interior_nodes, d_f) or (d_f,)
+        init_states, target_states, forcing_features, batch_times = batch
+
+        prediction, pred_std = self.unroll_prediction(
+            init_states, forcing_features, target_states
+        )
+
+        entry_mses = metrics.mse(
+            prediction,
+            target_states,
+            pred_std,
+            mask=self.interior_mask_bool,
+            sum_vars=False,
+        )  # (B, pred_steps, d_f)
+
+        # Compute mean RMSE for first prediction step
+        mean_rmse_ar_step_1 = torch.mean(torch.sqrt(entry_mses[:, 0, :]), dim=0)
 
         time_step_loss = torch.mean(
             self.loss(
                 prediction,
-                target,
+                target_states,
                 pred_std,
+                mask=self.interior_mask_bool,
             ),
             dim=0,
         )  # (time_steps-1,)
         mean_loss = torch.mean(time_step_loss)
 
-        # Log loss per time step forward and mean
         test_log_dict = {
-            f"test_loss_unroll{step}": time_step_loss[step - 1]
-            for step in self.args.val_steps_to_log
+            # Log loss per time step forward and mean
+            **{
+                f"test_loss_unroll{step}": time_step_loss[step - 1]
+                for step in self.args.val_steps_to_log
+            },
+            "test_mean_loss": mean_loss,
+            # Log mean RMSE for first prediction step and learning rate
+            **{
+                f"test_rmse_{v}": mean_rmse_ar_step_1[i]
+                for (i, v) in enumerate(
+                    self._datastore.get_vars_names(category="state")
+                )
+            },
+            "test_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
-        test_log_dict["test_mean_loss"] = mean_loss
 
         self.log_dict(
             test_log_dict,
@@ -656,14 +707,15 @@ class ARModel(pl.LightningModule):
             batch_size=batch[0].shape[0],
         )
 
+        self.test_metrics["mse"].append(entry_mses)
         # Compute all evaluation metrics for error maps Note: explicitly list
         # metrics here, as test_metrics can contain additional ones, computed
         # differently, but that should be aggregated on_test_epoch_end
-        for metric_name in ("mse", "mae"):
+        for metric_name in ("mae",):
             metric_func = metrics.get_metric(metric_name)
             batch_metric_vals = metric_func(
                 prediction,
-                target,
+                target_states,
                 pred_std,
                 sum_vars=False,
             )  # (B, pred_steps, d_f)
@@ -720,7 +772,11 @@ class ARModel(pl.LightningModule):
             existing prediction. Generate if None.
         """
         if prediction is None:
-            prediction, target, _, _ = self.common_step(batch)
+            (init_states, target, forcing_features, _) = batch
+
+            prediction, _ = self.unroll_prediction(
+                init_states, forcing_features, target
+            )
 
         target = batch[1]
         time = batch[-1]
@@ -797,7 +853,9 @@ class ARModel(pl.LightningModule):
 
                 example_i = self.plotted_examples
 
-                for var_name, fig in var_figs.items():
+                for var_name, fig in zip(
+                    self._datastore.get_vars_names("state"), var_figs
+                ):
 
                     # We need treat logging images differently for different
                     # loggers. WANDB can log multiple images to the same key,
