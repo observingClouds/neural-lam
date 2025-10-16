@@ -36,6 +36,9 @@ class BufferList(nn.Module):
     def __getitem__(self, key):
         return getattr(self, f"b{key}")
 
+    def __setitem__(self, key, value):
+        return setattr(self, f"b{key}", value)
+
     def __len__(self):
         return self.n_buffers
 

@@ -4,6 +4,7 @@ from typing import Union
 # Third-party
 import torch
 from torch import nn
+import numpy as np
 
 # Local
 from .. import utils
@@ -44,10 +45,16 @@ class BaseGraphModel(ARModel):
             # exactly the same way as grid node position static features.
             if name == "mesh_static_features":
                 # Rescale to [0,1] for lat/y and lon/x separately
-                min_val = attr_value.min(dim=0, keepdim=True)[0]
-                max_val = attr_value.max(dim=0, keepdim=True)[0]
-                attr_value = (attr_value - min_val) / (max_val - min_val)
-                attr_value = attr_value.to(torch.bfloat16)  # should match grid feature dtype
+                # Does not work for hierachical BufferList format
+                #min_val = attr_value.min(dim=0, keepdim=True)[0]
+                #max_val = attr_value.max(dim=0, keepdim=True)[0]
+                #attr_value = (attr_value - min_val) / (max_val - min_val)
+                #attr_value = attr_value.to(torch.bfloat16)  # should match grid feature dtype
+                stacked = np.vstack([*attr_value.buffers()]) 
+                min_val = stacked.min(axis=0)
+                max_val = stacked.max(axis=0)
+                for i, b in enumerate(attr_value.buffers()):
+                    attr_value[i] = (b-min_val)/(max_val - min_val)
 
             # Make BufferLists module members and register tensors as buffers
             if isinstance(attr_value, torch.Tensor):
