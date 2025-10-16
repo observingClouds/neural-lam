@@ -3,6 +3,7 @@ import json
 import random
 import time
 from argparse import ArgumentParser
+from pathlib import Path
 
 # Third-party
 # for logging the model:
@@ -31,9 +32,10 @@ def main(input_args=None):
         description="Train or evaluate NeurWP models for LAM"
     )
     parser.add_argument(
-        "--config_path",
+        "--config_paths",
+        nargs="+",
         type=str,
-        help="Path to the configuration for neural-lam",
+        help="Paths to the configurations for neural-lam",
     )
     parser.add_argument(
         "--model",
@@ -319,8 +321,8 @@ def main(input_args=None):
 
     # Asserts for arguments
     assert (
-        args.config_path is not None
-    ), "Specify your config with --config_path"
+        len(args.config_paths) > 0
+    ), "Specify at least one config with --config_paths"
     assert args.model in MODELS, f"Unknown model: {args.model}"
     assert args.eval in (
         None,
@@ -342,32 +344,70 @@ def main(input_args=None):
     # Set seed
     seed.seed_everything(args.seed)
 
-    # Load neural-lam configuration and datastore to use
-    config, datastore, datastore_boundary = load_config_and_datastores(
-        config_path=args.config_path
-    )
+    # Load all neural-lam configurations and datastores
+    configs = []
+    datastores = []
+    datastore_boundaries = []
+    for config_path in args.config_paths:
+        c, ds, dsb = load_config_and_datastores(config_path)
+        configs.append(c)
+        datastores.append(ds)
+        datastore_boundaries.append(dsb)
 
-    # Create datamodule
-    data_module = WeatherDataModule(
-        datastore=datastore,
-        datastore_boundary=datastore_boundary,
-        ar_steps_train=args.ar_steps_train,
-        ar_steps_eval=args.ar_steps_eval,
-        standardize=True,
-        num_past_forcing_steps=args.num_past_forcing_steps,
-        num_future_forcing_steps=args.num_future_forcing_steps,
-        num_past_boundary_steps=args.num_past_boundary_steps,
-        num_future_boundary_steps=args.num_future_boundary_steps,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        # Make sure that dataset provided for eval contains correct split
-        eval_split=args.eval if args.eval is not None else "test",
-        eval_init_times=args.eval_init_times,
-        dynamic_time_deltas=args.dynamic_time_deltas,
-        excluded_intervals=config.training.excluded_intervals,
-    )
+    # Create datamodules and models for each config
+    data_modules = []
+    models = []
+    ModelClass = MODELS[args.model]
+    for i in range(len(configs)):
+        config = configs[i]
+        datastore = datastores[i]
+        datastore_boundary = datastore_boundaries[i]
+        data_module = WeatherDataModule(
+            datastore=datastore,
+            datastore_boundary=datastore_boundary,
+            ar_steps_train=args.ar_steps_train,
+            ar_steps_eval=args.ar_steps_eval,
+            standardize=True,
+            num_past_forcing_steps=args.num_past_forcing_steps,
+            num_future_forcing_steps=args.num_future_forcing_steps,
+            num_past_boundary_steps=args.num_past_boundary_steps,
+            num_future_boundary_steps=args.num_future_boundary_steps,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            # Make sure that dataset provided for eval contains correct split
+            eval_split=args.eval if args.eval is not None else "test",
+            eval_init_times=args.eval_init_times,
+            dynamic_time_deltas=args.dynamic_time_deltas,
+            excluded_intervals=config.training.excluded_intervals,
+        )
+        data_modules.append(data_module)
 
-    # Instantiate model + trainer
+        if args.load and not args.restore_opt:
+            if i == 0:  # load for first model
+                model = ModelClass.load_from_checkpoint(
+                    args.load,
+                    args=args,
+                    config=config,
+                    datastore=datastore,
+                    datastore_boundary=datastore_boundary,
+                )
+            else:
+                model = ModelClass(
+                    args,
+                    config=config,
+                    datastore=datastore,
+                    datastore_boundary=datastore_boundary,
+                )
+        else:
+            model = ModelClass(
+                args,
+                config=config,
+                datastore=datastore,
+                datastore_boundary=datastore_boundary,
+            )
+        models.append(model)
+
+    # Instantiate trainer
     if torch.cuda.is_available():
         device_name = "cuda"
         torch.set_float32_matmul_precision(
@@ -384,25 +424,6 @@ def main(input_args=None):
             devices = [int(i) for i in args.devices]
         except ValueError:
             raise ValueError("devices should be 'auto' or a list of integers")
-
-    # Load model parameters Use new args for model
-    ModelClass = MODELS[args.model]
-    if args.load and not args.restore_opt:
-        # Restore only model weights, not opt setup
-        model = ModelClass.load_from_checkpoint(
-            args.load,
-            args=args,
-            config=config,
-            datastore=datastore,
-            datastore_boundary=datastore_boundary,
-        )
-    else:
-        model = ModelClass(
-            args,
-            config=config,
-            datastore=datastore,
-            datastore_boundary=datastore_boundary,
-        )
 
     if args.eval:
         prefix = f"eval-{args.eval}-"
@@ -436,7 +457,7 @@ def main(input_args=None):
     )
 
     training_logger = utils.setup_training_logger(
-        datastore=datastore, args=args, run_name=run_name
+        datastore=datastores[0], args=args, run_name=run_name
     )
     
     trainer = pl.Trainer(
@@ -460,15 +481,29 @@ def main(input_args=None):
             training_logger, val_steps=args.val_steps_to_log
         )  # Do after initializing logger
     if args.eval:
+        # For evaluation, perhaps use first model for now
         trainer.test(
-            model=model,
-            datamodule=data_module,
+            model=models[0],
+            datamodule=data_modules[0],
             ckpt_path=args.load,
         )
     else:
-        # Only feed fit method with checkpoint path if restore_opt
-        ckpt_for_fit = args.load if args.restore_opt else None
-        trainer.fit(model=model, datamodule=data_module, ckpt_path=ckpt_for_fit)
+        # Manual training loop with switching after each epoch
+        trainer.model = models[0]
+        trainer.setup(models[0], stage='fit')
+        num_configs = len(configs)
+        for epoch in range(args.epochs):
+            config_idx = epoch % num_configs
+            trainer.model = models[config_idx]
+            trainer.datamodule = data_modules[config_idx]
+            trainer.current_epoch = epoch
+            trainer.fit_loop.current_epoch = epoch
+            trainer.fit_loop.epoch_progress.current.processed = epoch
+            if epoch > 0 and config_idx == 0:  # when switching, setup new data
+                trainer.fit_loop.epoch_loop.setup_data()
+            trainer.fit_loop.run_epoch()
+            trainer.fit_loop.epoch_progress.update(1)
+        trainer.teardown()
 
 
 if __name__ == "__main__":
