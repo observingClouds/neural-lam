@@ -18,6 +18,47 @@ from .config import load_config_and_datastores
 from .models import GraphLAM, HiLAM, HiLAMParallel
 from .weather_dataset import WeatherDataModule
 
+# Custom callback to stop training at specific epoch
+class StopAtEpochCallback(pl.callbacks.Callback):
+    def __init__(self, stop_epoch):
+        self.stop_epoch = stop_epoch
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch >= self.stop_epoch:
+            trainer.should_stop = True
+
+
+class ModelSwitchCallback(pl.callbacks.Callback):
+    def __init__(self, models):
+        self.models = models
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        next_epoch = trainer.current_epoch + 1
+        if next_epoch < trainer.max_epochs:
+            next_idx = next_epoch % len(self.models)
+            trainer.lightning_module = self.models[next_idx]
+
+
+class CyclingWeatherDataModule(pl.LightningDataModule):
+    def __init__(self, data_modules):
+        super().__init__()
+        self.data_modules = data_modules
+        self.trainer = None
+
+    def train_dataloader(self):
+        epoch = 0
+        if self.trainer:
+            epoch = self.trainer.current_epoch
+        idx = epoch % len(self.data_modules)
+        return self.data_modules[idx].train_dataloader()
+
+    def val_dataloader(self):
+        return self.data_modules[0].val_dataloader()
+
+    def test_dataloader(self):
+        return self.data_modules[0].test_dataloader()
+
+
 MODELS = {
     "graph_lam": GraphLAM,
     "hi_lam": HiLAM,
@@ -444,22 +485,23 @@ def main(input_args=None):
             f"{time.strftime('%m_%d_%H')}-{random_run_id:04d}"
         )
 
-    callbacks = []
     # Checkpoint each 2 epochs
-    callbacks.append(
-        pl.callbacks.ModelCheckpoint(
-            dirpath=f"saved_models/{run_name}",
-            filename="{epoch:03d}-{step:07d}",
-            save_top_k=-1,
-            every_n_epochs=2,
-            save_last=True,
-        )
+    checkpoint_callback = pl.callbacks.ModelCheckpoint(
+        dirpath=f"saved_models/{run_name}",
+        filename="{epoch:03d}-{step:07d}",
+        save_top_k=-1,
+        every_n_epochs=2,
+        save_last=True,
     )
+
+    cycling_data_module = CyclingWeatherDataModule(data_modules)
+    cycling_data_module.trainer = None  # will be set by trainer later
 
     training_logger = utils.setup_training_logger(
         datastore=datastores[0], args=args, run_name=run_name
     )
-    
+
+    callbacks = [checkpoint_callback, ModelSwitchCallback(models)]
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         deterministic=True,
@@ -473,6 +515,7 @@ def main(input_args=None):
         check_val_every_n_epoch=args.val_interval,
         precision=args.precision,
         num_sanity_val_steps=args.num_sanity_steps,
+        reload_dataloaders_every_n_epochs=1,
     )
 
     # Only init once, on rank 0 only
@@ -481,29 +524,15 @@ def main(input_args=None):
             training_logger, val_steps=args.val_steps_to_log
         )  # Do after initializing logger
     if args.eval:
-        # For evaluation, perhaps use first model for now
+        # For evaluation, use cycling data module for train, but since eval, use first
         trainer.test(
             model=models[0],
             datamodule=data_modules[0],
             ckpt_path=args.load,
         )
     else:
-        # Manual training loop with switching after each epoch
-        trainer.model = models[0]
-        trainer.setup(models[0], stage='fit')
-        num_configs = len(configs)
-        for epoch in range(args.epochs):
-            config_idx = epoch % num_configs
-            trainer.model = models[config_idx]
-            trainer.datamodule = data_modules[config_idx]
-            trainer.current_epoch = epoch
-            trainer.fit_loop.current_epoch = epoch
-            trainer.fit_loop.epoch_progress.current.processed = epoch
-            if epoch > 0 and config_idx == 0:  # when switching, setup new data
-                trainer.fit_loop.epoch_loop.setup_data()
-            trainer.fit_loop.run_epoch()
-            trainer.fit_loop.epoch_progress.update(1)
-        trainer.teardown()
+        # Train with cycling data and model switching per epoch
+        trainer.fit(model=models[0], datamodule=cycling_data_module)
 
 
 if __name__ == "__main__":
