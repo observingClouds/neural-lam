@@ -36,7 +36,7 @@ class ModelSwitchCallback(pl.callbacks.Callback):
         next_epoch = trainer.current_epoch + 1
         if next_epoch < trainer.max_epochs:
             next_idx = next_epoch % len(self.models)
-            trainer.lightning_module = self.models[next_idx]
+            trainer.model = self.models[next_idx]
 
 
 class CyclingWeatherDataModule(pl.LightningDataModule):
@@ -50,6 +50,7 @@ class CyclingWeatherDataModule(pl.LightningDataModule):
         if self.trainer:
             epoch = self.trainer.current_epoch
         idx = epoch % len(self.data_modules)
+        self.data_modules[idx].setup("fit")
         return self.data_modules[idx].train_dataloader()
 
     def val_dataloader(self):
@@ -509,10 +510,6 @@ def main(input_args=None):
     cycling_data_module = CyclingWeatherDataModule(data_modules)
     cycling_data_module.trainer = None  # will be set by trainer later
 
-    training_logger = utils.setup_training_logger(
-        datastore=datastores[0], args=args, run_name=run_name
-    )
-
     callbacks = [checkpoint_callback, ModelSwitchCallback(models)]
     trainer = pl.Trainer(
         max_epochs=args.epochs,
@@ -526,7 +523,7 @@ def main(input_args=None):
         callbacks=callbacks,
         check_val_every_n_epoch=args.val_interval,
         precision=args.precision,
-        num_sanity_val_steps=args.num_sanity_steps,
+        num_sanity_val_steps=0,
         reload_dataloaders_every_n_epochs=1,
     )
 
@@ -544,7 +541,8 @@ def main(input_args=None):
         )
     else:
         # Train with cycling data and model switching per epoch
-        trainer.fit(model=models[0], datamodule=cycling_data_module)
+        ckpt_for_fit = args.load if args.restore_opt else None
+        trainer.fit(model=models[0], datamodule=cycling_data_module, ckpt_path=ckpt_for_fit)
 
 
 if __name__ == "__main__":
