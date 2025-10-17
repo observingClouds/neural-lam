@@ -53,10 +53,18 @@ class CyclingWeatherDataModule(pl.LightningDataModule):
         return self.data_modules[idx].train_dataloader()
 
     def val_dataloader(self):
-        return self.data_modules[0].val_dataloader()
+        epoch = 0
+        if self.trainer:
+            epoch = self.trainer.current_epoch
+        idx = epoch % len(self.data_modules)
+        return self.data_modules[idx].val_dataloader()
 
     def test_dataloader(self):
-        return self.data_modules[0].test_dataloader()
+        epoch = 0
+        if self.trainer:
+            epoch = self.trainer.current_epoch
+        idx = epoch % len(self.data_modules)
+        return self.data_modules[idx].test_dataloader()
 
 
 MODELS = {
@@ -492,6 +500,10 @@ def main(input_args=None):
         save_top_k=-1,
         every_n_epochs=2,
         save_last=True,
+    )
+
+    training_logger = utils.setup_training_logger(
+        datastore=datastores[0], args=args, run_name=run_name
     )
 
     cycling_data_module = CyclingWeatherDataModule(data_modules)
