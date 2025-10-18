@@ -12,6 +12,7 @@ from ..config import NeuralLAMConfig
 from ..datastore import BaseDatastore
 from ..interaction_net import InteractionNet
 from .ar_model import ARModel
+from pathlib import Path
 
 
 class BaseGraphModel(ARModel):
@@ -174,6 +175,83 @@ class BaseGraphModel(ARModel):
 
         # Compute indices and define clamping functions
         self.prepare_clamping_params(config, datastore)
+
+    def new_graph(self, graph_dir_path: Union[str, "pathlib.Path"], datastore: BaseDatastore = None):
+        """
+        Load a graph from a different directory and register its tensors/attributes
+        on this model instance. Returns the dictionary produced by utils.load_graph.
+
+        Notes:
+        - Tensor objects are registered as buffers (persistent=False) so they follow
+            the module device/ dtype movement.
+        """
+
+        graph_dir_path = Path(graph_dir_path)
+
+        # Load using existing utility (returns hierarchical flag and a dict of attrs)
+        hierarchical_flag, graph_ldict = utils.load_graph(
+            graph_dir_path=graph_dir_path, datastore=datastore
+        )
+
+        # Normalize mesh static features if present (lat/lon scaling by-channel)
+        for name, attr_value in graph_ldict.items():
+            # NOTE: It would be good to rescale mesh node position features in
+            # exactly the same way as grid node position static features.
+            if name == "mesh_static_features":
+                # Rescale to [0,1] for lat/y and lon/x separately
+                # Does not work for hierachical BufferList format
+                #min_val = attr_value.min(dim=0, keepdim=True)[0]
+                #max_val = attr_value.max(dim=0, keepdim=True)[0]
+                #attr_value = (attr_value - min_val) / (max_val - min_val)
+                #attr_value = attr_value.to(torch.bfloat16)  # should match grid feature dtype
+                stacked = np.vstack([*attr_value.buffers()]) 
+                min_val = stacked.min(axis=0)
+                max_val = stacked.max(axis=0)
+                for i, b in enumerate(attr_value.buffers()):
+                    attr_value[i] = (b-min_val)/(max_val - min_val)
+
+        # Register or attach attributes on self
+        for key, val in graph_ldict.items():
+            if isinstance(val, torch.Tensor):
+                # re-register tensor as buffer so it moves with the module
+                # overwriting existing buffer of same name is acceptable
+                self.register_buffer(key, val, persistent=False)
+            else:
+                setattr(self, key, val)
+
+        # Update stored hierarchical flag
+        self.hierarchical = hierarchical_flag
+
+        # Update derived edge/feature size attributes if available
+        if hasattr(self, "g2m_features") and isinstance(self.g2m_features, torch.Tensor):
+            self.g2m_edges, _ = tuple(self.g2m_features.shape)
+        if hasattr(self, "m2g_features") and isinstance(self.m2g_features, torch.Tensor):
+            self.m2g_edges, _ = tuple(self.m2g_features.shape)
+        # encoder
+        self.g2m_gnn = InteractionNet(
+            self.g2m_edge_index,
+            hidden_dim_grid,
+            hidden_layers=args.hidden_layers,
+            update_edges=False,
+            num_rec=self.num_grid_connected_mesh_nodes,
+        )
+        # decoder
+        self.m2g_gnn = InteractionNet(
+            self.m2g_edge_index,
+            hidden_dim_grid,
+            hidden_layers=args.hidden_layers,
+            update_edges=False,
+            num_rec=self.num_interior_nodes,
+        )
+
+        # Inform user
+        try:
+            total = self.num_total_grid_nodes + self.num_mesh_nodes
+        except Exception:
+            total = "unknown"
+        utils.rank_zero_print(f"Loaded external graph from {graph_dir_path} ({total} nodes)")
+
+        return
 
     @property
     def num_mesh_nodes(self):

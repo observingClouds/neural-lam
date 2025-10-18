@@ -36,7 +36,8 @@ class ModelSwitchCallback(pl.callbacks.Callback):
         next_epoch = trainer.current_epoch + 1
         if next_epoch < trainer.max_epochs:
             next_idx = next_epoch % len(self.models)
-            trainer.model = self.models[next_idx]
+            import ipdb; ipdb.set_trace()
+            trainer.model.new_graph(graph_dir_path=self.models[next_idx].graph_dir_path, datastore=self.models[next_idx].datastore)
 
 
 class CyclingWeatherDataModule(pl.LightningDataModule):
