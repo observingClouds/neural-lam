@@ -175,25 +175,17 @@ class BaseGraphModel(ARModel):
 
         # Compute indices and define clamping functions
         self.prepare_clamping_params(config, datastore)
-
-    def new_graph(self, graph_dir_path: Union[str, "pathlib.Path"], datastore: BaseDatastore = None):
+    
+    def update(self, model, graph_name, args, config: NeuralLAMConfig, datastore: BaseDatastore):
         """
-        Load a graph from a different directory and register its tensors/attributes
-        on this model instance. Returns the dictionary produced by utils.load_graph.
-
-        Notes:
-        - Tensor objects are registered as buffers (persistent=False) so they follow
-            the module device/ dtype movement.
+        Update model parameters according to new args and config
         """
-
-        graph_dir_path = Path(graph_dir_path)
-
-        # Load using existing utility (returns hierarchical flag and a dict of attrs)
-        hierarchical_flag, graph_ldict = utils.load_graph(
-            graph_dir_path=graph_dir_path, datastore=datastore
+        # Load graph with static features
+        graph_dir_path = datastore.root_path / "graph" / graph_name
+        self.hierarchical, graph_ldict = utils.load_graph(
+            graph_dir_path=graph_dir_path,
+            datastore=datastore,
         )
-
-        # Normalize mesh static features if present (lat/lon scaling by-channel)
         for name, attr_value in graph_ldict.items():
             # NOTE: It would be good to rescale mesh node position features in
             # exactly the same way as grid node position static features.
@@ -210,48 +202,125 @@ class BaseGraphModel(ARModel):
                 for i, b in enumerate(attr_value.buffers()):
                     attr_value[i] = (b-min_val)/(max_val - min_val)
 
-        # Register or attach attributes on self
-        for key, val in graph_ldict.items():
-            if isinstance(val, torch.Tensor):
-                # re-register tensor as buffer so it moves with the module
-                # overwriting existing buffer of same name is acceptable
-                self.register_buffer(key, val, persistent=False)
+            # Make BufferLists module members and register tensors as buffers
+            if isinstance(attr_value, torch.Tensor):
+                self.register_buffer(name, attr_value, persistent=False)
             else:
-                setattr(self, key, val)
+                setattr(self, name, attr_value)
 
-        # Update stored hierarchical flag
-        self.hierarchical = hierarchical_flag
+        # Specify dimensions of data
+        utils.rank_zero_print(
+            f"Loaded graph with {self.num_total_grid_nodes + self.num_mesh_nodes} "
+            f"nodes ({self.num_total_grid_nodes} grid, {self.num_mesh_nodes} mesh)"
+        )
 
-        # Update derived edge/feature size attributes if available
-        if hasattr(self, "g2m_features") and isinstance(self.g2m_features, torch.Tensor):
-            self.g2m_edges, _ = tuple(self.g2m_features.shape)
-        if hasattr(self, "m2g_features") and isinstance(self.m2g_features, torch.Tensor):
-            self.m2g_edges, _ = tuple(self.m2g_features.shape)
+        # Determine grid hidden dim
+        if args.hidden_dim_grid is None:
+            # Same as hidden_dim
+            hidden_dim_grid = args.hidden_dim
+        else:
+            hidden_dim_grid = args.hidden_dim_grid
+
+        # interior_dim from data + static
+        self.g2m_edges, g2m_dim = model.g2m_features.shape
+        self.m2g_edges, m2g_dim = model.m2g_features.shape
+
+        # Define sub-models
+        # Feature embedders for interior
+        self.mlp_blueprint_end = [args.hidden_dim] * (args.hidden_layers + 1)
+        # For grid hidden dim
+        self.grid_mlp_blueprint_end = [hidden_dim_grid] * (
+            args.hidden_layers + 1
+        )
+        self.interior_embedder = utils.make_mlp(
+            [model.interior_dim] + model.grid_mlp_blueprint_end
+        )
+
+        if self.boundary_forced:
+            # Define embedder for boundary nodes
+            # Optional separate embedder for boundary nodes
+            if args.shared_grid_embedder:
+                assert self.interior_dim == self.boundary_dim, (
+                    "Grid and boundary input dimension must "
+                    "be the same when using "
+                    f"the same embedder, got interior_dim={self.interior_dim}, "
+                    f"boundary_dim={self.boundary_dim}"
+                )
+                self.boundary_embedder = self.interior_embedder
+            else:
+                self.boundary_embedder = utils.make_mlp(
+                    [self.boundary_dim] + self.grid_mlp_blueprint_end
+                )
+
+        # Projections between grid dim and hidden dim before and after processor
+        # self.pre_mesh_proj = nn.Sequential(
+        #     nn.SiLU(), nn.Linear(hidden_dim_grid, args.hidden_dim)
+        # )
+        # self.post_mesh_proj = nn.Sequential(
+        #     nn.SiLU(), nn.Linear(args.hidden_dim, hidden_dim_grid)
+        # )
+
+        self.g2m_embedder = utils.make_mlp(
+            [g2m_dim] + model.grid_mlp_blueprint_end
+        )
+        self.m2g_embedder = utils.make_mlp(
+            [m2g_dim] + model.grid_mlp_blueprint_end
+        )
+
+        # GNNs
         # encoder
         self.g2m_gnn = InteractionNet(
-            self.g2m_edge_index,
+            model.g2m_edge_index,
             hidden_dim_grid,
             hidden_layers=args.hidden_layers,
             update_edges=False,
-            num_rec=self.num_grid_connected_mesh_nodes,
+            num_rec=model.num_grid_connected_mesh_nodes,
         )
+        self.encoding_grid_mlp = utils.make_mlp(
+            [hidden_dim_grid] + model.grid_mlp_blueprint_end
+        )
+
         # decoder
         self.m2g_gnn = InteractionNet(
-            self.m2g_edge_index,
+            model.m2g_edge_index,
             hidden_dim_grid,
             hidden_layers=args.hidden_layers,
             update_edges=False,
-            num_rec=self.num_interior_nodes,
+            num_rec=model.num_interior_nodes,
         )
 
-        # Inform user
-        try:
-            total = self.num_total_grid_nodes + self.num_mesh_nodes
-        except Exception:
-            total = "unknown"
-        utils.rank_zero_print(f"Loaded external graph from {graph_dir_path} ({total} nodes)")
+        # # Output mapping (hidden_dim -> output_dim)
+        # self.output_map = utils.make_mlp(
+        #     [hidden_dim_grid]
+        #     + [hidden_dim_grid] * args.hidden_layers
+        #     + [self.grid_output_dim],
+        #     layer_norm=False,
+        # )  # No layer norm on this one
 
-        return
+        # Compute constants for use in time_delta encoding
+        # if self.boundary_forced:
+        #     step_length_ratio = (
+        #         datastore_boundary.step_length / datastore.step_length
+        #     )
+        #     min_time_delta = (
+        #         -(args.num_past_boundary_steps + 1) * step_length_ratio
+        #     )
+        #     max_time_delta = args.num_future_boundary_steps * step_length_ratio
+            # time_delta_magnitude = max(max_time_delta, abs(min_time_delta))
+            # freq_indices = 1.0 + torch.arange(
+            #     self.time_delta_enc_dim // 2,
+            #     dtype=torch.float,
+            # )
+            # self.register_buffer(
+            #     "enc_freq_denom",
+            #     (2 * time_delta_magnitude)
+            #     ** (2 * freq_indices / self.time_delta_enc_dim),
+            #     persistent=False,
+            # )
+
+        # # Compute indices and define clamping functions
+        # self.prepare_clamping_params(config, datastore)
+
 
     @property
     def num_mesh_nodes(self):

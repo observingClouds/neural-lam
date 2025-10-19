@@ -37,7 +37,8 @@ class ModelSwitchCallback(pl.callbacks.Callback):
         if next_epoch < trainer.max_epochs:
             next_idx = next_epoch % len(self.models)
             import ipdb; ipdb.set_trace()
-            trainer.model.new_graph(graph_dir_path=self.models[next_idx].graph_dir_path, datastore=self.models[next_idx].datastore)
+            graph_name = "triangular2D_split13_DOM0{next_idx}".format(next_idx=next_idx)
+            pl_module.update(self.models[next_idx], graph_name, pl_module.args, datastore=self.models[next_idx]._datastore, config=self.models[next_idx]._config)
 
 
 class CyclingWeatherDataModule(pl.LightningDataModule):

@@ -47,6 +47,44 @@ class HiLAM(BaseHiGraphModel):
         self.mesh_up_same_gnns = nn.ModuleList(
             [self.make_same_gnns(args) for _ in range(args.processor_layers)]
         )  # Nested lists (proc_steps, num_levels)
+    
+    def update(self, model, graph_name, args, config: NeuralLAMConfig, datastore: BaseDatastore):
+        """
+        Update model after a change in args.
+        """
+        super().update(model, graph_name, args, config, datastore)
+        # Make down GNNs, both for down edges and same level
+        self.mesh_down_gnns = nn.ModuleList(
+            [model.make_down_gnns(args) for _ in range(args.processor_layers)]
+        )  # Nested lists (proc_steps, num_levels-1)
+        self.mesh_down_same_gnns = nn.ModuleList(
+            [model.make_same_gnns(args) for _ in range(args.processor_layers)]
+        )  # Nested lists (proc_steps, num_levels)
+
+        # Make up GNNs, both for up edges and same level
+        self.mesh_up_gnns = nn.ModuleList(
+            [model.make_up_gnns(args) for _ in range(args.processor_layers)]
+        )  # Nested lists (proc_steps, num_levels-1)
+        self.mesh_up_same_gnns = nn.ModuleList(
+            [model.make_same_gnns(args) for _ in range(args.processor_layers)]
+        )  # Nested lists (proc_steps, num_levels)
+
+
+        # Update down GNNs
+        self.mesh_down_gnns = nn.ModuleList(
+            [model.make_down_gnns(args) for _ in range(args.processor_layers)]
+        )  # Nested lists (proc_steps, num_levels-1)
+        self.mesh_down_same_gnns = nn.ModuleList(
+            [model.make_same_gnns(args) for _ in range(args.processor_layers)]
+        )  # Nested lists (proc_steps, num_levels)
+
+        # Update up GNNs
+        self.mesh_up_gnns = nn.ModuleList(
+            [model.make_up_gnns(args) for _ in range(args.processor_layers)]
+        )  # Nested lists (proc_steps, num_levels-1)
+        self.mesh_up_same_gnns = nn.ModuleList(
+            [model.make_same_gnns(args) for _ in range(args.processor_layers)]
+        )  # Nested lists (proc_steps, num_levels)
 
     def make_same_gnns(self, args):
         """
