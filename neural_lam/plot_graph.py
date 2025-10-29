@@ -154,7 +154,7 @@ def create_node_plot(
     if subsample:
         # Figure out how much to subsample by
         subsampling_factor = int(num_nodes / NODE_PLOT_LIMIT)
-        node_pos = node_pos[::subsampling_factor]  # Simple subsampling
+        node_pos = node_pos[::16**3]  # Simple subsampling
 
     return go.Scatter3d(
         x=node_pos[:, 0],
@@ -357,7 +357,7 @@ def main():
         # Create separate plot objects for interior and boundary
         data_objs.append(
             create_node_plot(
-                datastore.get_lat_lon(category="state"),
+                datastore.get_lat_lon(category="state")[::16**3],
                 "Interior grid Nodes",
                 color=args.grid_color,
                 radius=GRID_RADIUS,
@@ -516,9 +516,13 @@ def main():
         grid_con_lat_lon = mesh_lat_lon
 
     # Plot G2M
+    mask = np.isin(grid_lat_lon, datastore.get_lat_lon(category="state")[::16**3]).all(axis=1)
+    idx = np.where(mask)[0]
+    mask_edges = np.isin(g2m_edge_index[0,:], idx)
+    import ipdb; ipdb.set_trace()
     data_objs.append(
         create_edge_plot(
-            g2m_edge_index,
+            g2m_edge_index[:, mask_edges],
             grid_lat_lon,
             grid_con_lat_lon,
             "G2M Edges",
@@ -531,6 +535,7 @@ def main():
     )
 
     # Plot M2G
+    mask = np.isin(datastore.get_lat_lon(category="state"), grid_lat_lon).all(axis=1)
     data_objs.append(
         create_edge_plot(
             m2g_edge_index,
