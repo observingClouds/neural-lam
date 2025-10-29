@@ -357,7 +357,7 @@ class ARModel(pl.LightningModule):
             pred_std = self.per_var_std  # (d_f,)
 
         return prediction, pred_std
-    
+
     def _sync2skip(self, flag_skip):
         # see below:
         # https://github.com/Lightning-AI/lightning/issues/5243#issuecomment-1552650013
@@ -371,7 +371,9 @@ class ARModel(pl.LightningModule):
         return any_invalid
 
     def _check_nan_inf_loss(self, loss, batch_id=None):
-        mask_nan_inf = torch.logical_or(torch.isnan(loss), ~torch.isfinite(loss))
+        mask_nan_inf = torch.logical_or(
+            torch.isnan(loss), ~torch.isfinite(loss)
+        )
         logger.warning(f"loss has nans: {mask_nan_inf}")
         if torch.any(mask_nan_inf):
             # if any is invalid then we must flag this to all DDP processes
@@ -400,22 +402,46 @@ class ARModel(pl.LightningModule):
 
     def common_step(self, batch):
         """
-        Predict on single batch
-        batch consists of:
-        init_states: (B, 2, num_interior_nodes, d_features)
-        target_states: (B, pred_steps, num_interior_nodes, d_features)
-        forcing: (B, pred_steps, num_interior_nodes, d_forcing),
-        boundary_forcing:
-            (B, pred_steps, num_boundary_nodes, d_boundary_forcing),
-            where index 0 corresponds to index 1 of init_states
+        Predict on a single batch represented as a dictionary containing:
+        - init_states: (B, 2, num_grid_nodes, d_features)
+        - target_states: (B, pred_steps, num_grid_nodes, d_features)
+        - forcing_features: (B, pred_steps, num_grid_nodes, d_forcing)
+        - batch_times: (B, pred_steps), times corresponding to each target step
+        - graph: graph data (for all subgraphs, g2m, m2m and m2g) comprised of
+          adjacency lists, static edge features, static node features
         """
-        (
-            init_states,
-            target_states,
-            forcing,
-            boundary_forcing,
-            batch_times,
-        ) = batch
+        if not isinstance(batch, dict):
+            raise TypeError(
+                "ARModel expected batches collated as dictionaries but "
+                f"received {type(batch)}."
+            )
+
+        required_keys = [
+            "init_states",
+            "target_states",
+            "forcing",
+            "boundary_forcing",
+            "batch_times",
+            "graph",
+        ]
+        missing_keys = [key for key in required_keys if key not in batch]
+        if missing_keys:
+            raise KeyError(
+                f"ARModel batches missing required keys: {missing_keys}"
+            )
+
+        graph = batch["graph"]
+        if graph is None:
+            raise ValueError("Graph data is required for ARModel batches.")
+
+        if hasattr(self, "set_graph"):
+            self.set_graph(graph)
+
+        init_states = batch["init_states"]
+        target_states = batch["target_states"]
+        forcing = batch["forcing"]
+        boundary_forcing = batch["boundary_forcing"]
+        batch_times = batch["batch_times"]
 
         prediction, pred_std = self.unroll_prediction(
             init_states, forcing, boundary_forcing
@@ -442,8 +468,8 @@ class ARModel(pl.LightningModule):
         )
         batch_loss = torch.mean(time_step_loss)
 
-        #any_invalid = self._check_nan_inf_loss(batch_loss)
-        #if any_invalid:
+        # any_invalid = self._check_nan_inf_loss(batch_loss)
+        # if any_invalid:
         #    # skip this batch altogether on all workers.
         #    return None
 
@@ -465,7 +491,8 @@ class ARModel(pl.LightningModule):
             },
             "train_mean_loss": batch_loss,
             **{
-                f"train_rmse_{v}": mean_rmse_ar_step_1[i] for i, v in enumerate(self._datastore.get_vars_names("state"))
+                f"train_rmse_{v}": mean_rmse_ar_step_1[i]
+                for i, v in enumerate(self._datastore.get_vars_names("state"))
             },
             "train_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
@@ -476,7 +503,7 @@ class ARModel(pl.LightningModule):
             on_step=True,
             on_epoch=True,
             sync_dist=True,
-            batch_size=batch[0].shape[0],
+            batch_size=batch["init_states"].shape[0],
         )
         return batch_loss
 
@@ -519,8 +546,8 @@ class ARModel(pl.LightningModule):
         )  # (time_steps-1)
         mean_loss = torch.mean(time_step_loss)
 
-        #any_invalid = self._check_nan_inf_loss(mean_loss, batch_idx)
-        #if any_invalid:
+        # any_invalid = self._check_nan_inf_loss(mean_loss, batch_idx)
+        # if any_invalid:
         #    # skip this batch altogether on all workers.
         #    return None
 
@@ -533,7 +560,8 @@ class ARModel(pl.LightningModule):
             },
             "val_mean_loss": mean_loss,
             **{
-                f"val_rmse_{v}": mean_rmse_ar_step_1[i] for i, v in enumerate(self._datastore.get_vars_names("state"))
+                f"val_rmse_{v}": mean_rmse_ar_step_1[i]
+                for i, v in enumerate(self._datastore.get_vars_names("state"))
             },
             "val_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
@@ -542,7 +570,7 @@ class ARModel(pl.LightningModule):
             on_step=False,
             on_epoch=True,
             sync_dist=True,
-            batch_size=batch[0].shape[0],
+            batch_size=batch["init_states"].shape[0],
         )
 
         self.val_metrics["mse"].append(entry_mses)
@@ -601,7 +629,7 @@ class ARModel(pl.LightningModule):
             # Unstack grid coords if necessary, this also avoids the need to
             # try to store a MultiIndex zarr dataset which is not supported by
             # xarray
-            #if isinstance(self._datastore, BaseRegularGridDatastore):
+            # if isinstance(self._datastore, BaseRegularGridDatastore):
             #    da_pred = self._datastore.unstack_grid_coords(da_pred)
 
             # First entry in da_pred.coords["time"] is time of first prediction,
@@ -677,7 +705,7 @@ class ARModel(pl.LightningModule):
             on_step=False,
             on_epoch=True,
             sync_dist=True,
-            batch_size=batch[0].shape[0],
+            batch_size=batch["init_states"].shape[0],
         )
 
         # Compute all evaluation metrics for error maps Note: explicitly list
@@ -746,8 +774,8 @@ class ARModel(pl.LightningModule):
         if prediction is None:
             prediction, target, _, _ = self.common_step(batch)
 
-        target = batch[1]
-        time = batch[-1]
+        target = batch["target_states"]
+        time = batch["batch_times"]
 
         # Rescale to original data scale
         prediction_rescaled = prediction * self.state_std + self.state_mean
@@ -767,13 +795,13 @@ class ARModel(pl.LightningModule):
                 time=time_slice,
                 split=split,
                 category="state",
-            )  #.unstack("grid_index")
+            )  # .unstack("grid_index")
             da_target = self._create_dataarray_from_tensor(
                 tensor=target_slice,
                 time=time_slice,
                 split=split,
                 category="state",
-            )  #.unstack("grid_index")
+            )  # .unstack("grid_index")
 
             var_vmin = (
                 torch.minimum(
@@ -827,7 +855,10 @@ class ARModel(pl.LightningModule):
                     # loggers. WANDB can log multiple images to the same key,
                     # while other loggers, as MLFlow, need unique keys for
                     # each image.
-                    if isinstance(self.logger, (pl.loggers.WandbLogger, pl.loggers.MLFlowLogger)):
+                    if isinstance(
+                        self.logger,
+                        (pl.loggers.WandbLogger, pl.loggers.MLFlowLogger),
+                    ):
                         key = f"{var_name}_example_{example_i}"
                     else:
                         key = f"{var_name}_example"
@@ -991,7 +1022,9 @@ class ARModel(pl.LightningModule):
                 },
             )
             # Save as pickle
-            output_path = os.path.join(self.logger.save_dir, f"{prefix}_metrics.pkl")
+            output_path = os.path.join(
+                self.logger.save_dir, f"{prefix}_metrics.pkl"
+            )
             with open(output_path, "wb") as f:
                 pickle.dump(metric_ds, f)
 
@@ -1044,7 +1077,9 @@ class ARModel(pl.LightningModule):
             )
             os.makedirs(pdf_loss_maps_dir, exist_ok=True)
             for t_i, fig in zip(self.args.val_steps_to_log, pdf_loss_map_figs):
-                fig.savefig(os.path.join(pdf_loss_maps_dir, f"loss_t{t_i:04d}.pdf"))
+                fig.savefig(
+                    os.path.join(pdf_loss_maps_dir, f"loss_t{t_i:04d}.pdf")
+                )
             # save mean spatial loss as .pt file also
             torch.save(
                 mean_spatial_loss.cpu(),

@@ -111,7 +111,7 @@ def plot_on_axis(
     # grid_shape = (
     #    datastore.grid_shape_state.x,
     #    datastore.grid_shape_state.y,
-    #)
+    # )
     # lons = lats_lons[:, 0].reshape(grid_shape)
     # lats = lats_lons[:, 1].reshape(grid_shape)
 
@@ -218,9 +218,7 @@ def plot_spatial_error(
         subplot_kw={"projection": datastore.coords_projection},
     )
 
-    error_grid = (
-        error.cpu().numpy()
-    )
+    error_grid = error.cpu().numpy()
 
     im = plot_on_axis(
         ax, xr.DataArray(error_grid), datastore, vmin, vmax, cmap="OrRd"

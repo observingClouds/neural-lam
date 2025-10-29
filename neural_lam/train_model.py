@@ -15,7 +15,8 @@ from loguru import logger
 from . import utils
 from .config import load_config_and_datastores
 from .models import GraphLAM, HiLAM, HiLAMParallel
-from .weather_dataset import WeatherDataModule
+from .models.base_graph_model import BaseGraphModel
+from .weather_dataset import WeatherDataModule, WeatherDatasetWithGraph
 
 MODELS = {
     "graph_lam": GraphLAM,
@@ -347,6 +348,18 @@ def main(input_args=None):
         config_path=args.config_path
     )
 
+    # Select model class
+    ModelClass = MODELS[args.model]
+
+    # Prepare graph metadata for graph-based models
+    graph_sizes = None
+    graph_name = args.graph if issubclass(ModelClass, BaseGraphModel) else None
+    if graph_name is not None:
+        graph_dir_path = datastore.root_path / "graph" / graph_name
+        _, graph_sizes = WeatherDatasetWithGraph.load_graph(
+            graph_dir_path=graph_dir_path
+        )
+
     # Create datamodule
     data_module = WeatherDataModule(
         datastore=datastore,
@@ -365,6 +378,7 @@ def main(input_args=None):
         eval_init_times=args.eval_init_times,
         dynamic_time_deltas=args.dynamic_time_deltas,
         excluded_intervals=config.training.excluded_intervals,
+        graph_name=graph_name,
     )
 
     # Instantiate model + trainer
@@ -395,6 +409,7 @@ def main(input_args=None):
             config=config,
             datastore=datastore,
             datastore_boundary=datastore_boundary,
+            graph_sizes=graph_sizes if graph_name is not None else None,
         )
     else:
         model = ModelClass(
@@ -402,6 +417,7 @@ def main(input_args=None):
             config=config,
             datastore=datastore,
             datastore_boundary=datastore_boundary,
+            graph_sizes=graph_sizes if graph_name is not None else None,
         )
 
     if args.eval:
@@ -413,10 +429,12 @@ def main(input_args=None):
         run_name = args.logger_run_name
     elif args.load:
         last_ckpt = torch.load(args.load, weights_only=False)
-        path_last_ckpt = Path(list(last_ckpt['callbacks'].values())[0]['last_model_path'])
+        path_last_ckpt = Path(
+            list(last_ckpt["callbacks"].values())[0]["last_model_path"]
+        )
         run_name = path_last_ckpt.parts[-2]
         if args.eval:
-            run_name = run_name.replace("train-","eval-")
+            run_name = run_name.replace("train-", "eval-")
     else:
         run_name = (
             f"{prefix}{args.model}-{args.processor_layers}x{args.hidden_dim}-"
@@ -438,7 +456,7 @@ def main(input_args=None):
     training_logger = utils.setup_training_logger(
         datastore=datastore, args=args, run_name=run_name
     )
-    
+
     trainer = pl.Trainer(
         max_epochs=args.epochs,
         deterministic=True,

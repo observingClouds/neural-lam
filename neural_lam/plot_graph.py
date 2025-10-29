@@ -10,6 +10,7 @@ from PIL import Image
 # Local
 from . import utils
 from .config import load_config_and_datastores
+from .weather_dataset import WeatherDatasetWithGraph
 from .graphs import graph_utils as gutils
 
 GRID_RADIUS = 1
@@ -154,7 +155,7 @@ def create_node_plot(
     if subsample:
         # Figure out how much to subsample by
         subsampling_factor = int(num_nodes / NODE_PLOT_LIMIT)
-        node_pos = node_pos[::16**3]  # Simple subsampling
+        node_pos = node_pos[:: 16**3]  # Simple subsampling
 
     return go.Scatter3d(
         x=node_pos[:, 0],
@@ -287,17 +288,17 @@ def main():
     boundary_forced = datastore_boundary is not None
 
     # Load graph data
-    graph_dir_path = os.path.join(
-        datastore.root_path, "graph", args.graph_name
+    graph_dir_path = os.path.join(datastore.root_path, "graph", args.graph_name)
+    graph_edges_and_features, _ = WeatherDatasetWithGraph.load_graph(
+        graph_dir_path=graph_dir_path
     )
-    hierarchical, graph_ldict = utils.load_graph(
-        graph_dir_path=graph_dir_path,
-        datastore=datastore,
-    )
+    graph_data = graph_edges_and_features.as_batch_dict()
+    hierarchical = graph_data["hierarchical"]
     # Turn all to numpy
-    (g2m_edge_index, m2g_edge_index) = (
-        graph_ldict["g2m_edge_index"].numpy(),
-        graph_ldict["m2g_edge_index"].numpy(),
+    (g2m_edge_index, m2g_edge_index, m2m_edge_index,) = (
+        graph_data["g2m_edge_index"],
+        graph_data["m2g_edge_index"],
+        graph_data["m2m_edge_index"],
     )
 
     # Plotting is in 3d, with lat-lons
@@ -357,7 +358,7 @@ def main():
         # Create separate plot objects for interior and boundary
         data_objs.append(
             create_node_plot(
-                datastore.get_lat_lon(category="state")[::16**3],
+                datastore.get_lat_lon(category="state")[:: 16**3],
                 "Interior grid Nodes",
                 color=args.grid_color,
                 radius=GRID_RADIUS,
@@ -398,13 +399,13 @@ def main():
             """Helper function to make list of tensors numpy arrays"""
             return [elem.numpy() for elem in tensor_list]
 
-        m2m_edge_index = tensor_list_to_numpy(graph_ldict["m2m_edge_index"])
-        mesh_lat_lon_level = tensor_list_to_numpy(graph_ldict["mesh_lat_lon"])
+        m2m_edge_index = tensor_list_to_numpy(graph_data["m2m_edge_index"])
+        mesh_lat_lon_level = tensor_list_to_numpy(graph_data["mesh_lat_lon"])
         mesh_up_edge_index = tensor_list_to_numpy(
-            graph_ldict["mesh_up_edge_index"]
+            graph_data["mesh_up_edge_index"],
         )
         mesh_down_edge_index = tensor_list_to_numpy(
-            graph_ldict["mesh_down_edge_index"]
+            graph_data["mesh_down_edge_index"],
         )
 
         # Iterate over levels, adding all nodes and edges
@@ -481,10 +482,10 @@ def main():
         # Connect g2m and m2g only to bottom level
         grid_con_lat_lon = mesh_lat_lon_level[0]
     else:
-        mesh_lat_lon = graph_ldict["mesh_lat_lon"].numpy()
+        mesh_lat_lon = graph_data["mesh_lat_lon"].numpy()
 
         # Non-hierarchical
-        m2m_edge_index = graph_ldict["m2m_edge_index"].numpy()
+        m2m_edge_index = graph_data["m2m_edge_index"].numpy()
         # TODO Degree-dependent node size option?
         #  mesh_degrees = pyg.utils.degree(m2m_edge_index[1]).numpy()
         #  mesh_node_size = mesh_degrees / 2
@@ -516,10 +517,15 @@ def main():
         grid_con_lat_lon = mesh_lat_lon
 
     # Plot G2M
-    mask = np.isin(grid_lat_lon, datastore.get_lat_lon(category="state")[::16**3]).all(axis=1)
+    mask = np.isin(
+        grid_lat_lon, datastore.get_lat_lon(category="state")[:: 16**3]
+    ).all(axis=1)
     idx = np.where(mask)[0]
-    mask_edges = np.isin(g2m_edge_index[0,:], idx)
-    import ipdb; ipdb.set_trace()
+    mask_edges = np.isin(g2m_edge_index[0, :], idx)
+    # Third-party
+    import ipdb
+
+    ipdb.set_trace()
     data_objs.append(
         create_edge_plot(
             g2m_edge_index[:, mask_edges],
@@ -535,7 +541,9 @@ def main():
     )
 
     # Plot M2G
-    mask = np.isin(datastore.get_lat_lon(category="state"), grid_lat_lon).all(axis=1)
+    mask = np.isin(datastore.get_lat_lon(category="state"), grid_lat_lon).all(
+        axis=1
+    )
     data_objs.append(
         create_edge_plot(
             m2g_edge_index,

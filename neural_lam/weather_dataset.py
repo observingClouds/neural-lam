@@ -1,16 +1,20 @@
 # Standard library
+import copy
 import datetime
 import warnings
-from typing import Union
+from pathlib import Path
+from typing import Any, Dict, Iterable, Union
 
 # Third-party
 import numpy as np
 import pytorch_lightning as pl
 import torch
 import xarray as xr
+from torch.utils.data._utils.collate import default_collate
 
 # First-party
 from neural_lam.datastore.base import BaseDatastore
+from neural_lam.graph_data import build_graph_sizes, load_graph
 from neural_lam.utils import (
     check_time_overlap,
     crop_time_if_needed,
@@ -924,10 +928,10 @@ class WeatherDataset(torch.utils.data.Dataset):
 
         Returns
         -------
-        init_states : TrainingSample
-            A training sample object containing the initial states, target
-            states, forcing and batch times. The batch times are the times of
-            the target steps.
+        Dict[str, torch.Tensor]
+            Dictionary with keys ``init_states``, ``target_states``,
+            ``forcing_features`` and ``batch_times`` describing the training
+            sample tensors.
 
         """
         (
@@ -964,7 +968,13 @@ class WeatherDataset(torch.utils.data.Dataset):
         if self.datastore_boundary is None:
             assert boundary.numel() == 0
 
-        return init_states, target_states, forcing, boundary, target_times
+        return {
+            "init_states": init_states,
+            "target_states": target_states,
+            "forcing": forcing,
+            "boundary": boundary,
+            "batch_times": target_times,
+        }
 
     def __iter__(self):
         """
@@ -1160,6 +1170,74 @@ class EvalSubsetWrapper(torch.utils.data.Dataset):
         return batch
 
 
+class WeatherDatasetWithGraph(torch.utils.data.Dataset):
+    """
+    Dataset wrapper that pairs weather samples with a static graph.
+
+    Attributes
+    ----------
+    graph_edges_and_features : GraphEdgesAndFeatures
+        Dataclass holding adjacency information and static features shared
+        across all samples.
+    graph_sizes : GraphSizes
+        Dimensional metadata describing the graph.
+    graph_payload : dict
+        Dictionary view of ``graph_edges_and_features`` used when returning
+        batches.
+    """
+
+    def __init__(
+        self,
+        weather_dataset: WeatherDataset,
+        graph_name: str,
+       device: str = "cpu",
+    ):
+        super().__init__()
+        self.weather_dataset = weather_dataset
+        self.graph_name = graph_name
+        self.device = device
+        self.datastore = weather_dataset.datastore
+
+        self.graph_dir_path = (
+            Path(self.datastore.root_path) / "graph" / self.graph_name
+        )
+
+        graph_edges_and_features = load_graph(
+            graph_dir_path=self.graph_dir_path, device=self.device
+        )
+        self.graph_edges_and_features = graph_edges_and_features
+        self.graph_sizes = build_graph_sizes(graph_edges_and_features)
+        self.graph_payload = graph_edges_and_features.as_batch_dict()
+        self.hierarchical = self.graph_sizes.hierarchical
+
+    def __len__(self):
+        return len(self.weather_dataset)
+
+    def __getitem__(self, idx):
+        sample = self.weather_dataset[idx].copy()
+        sample["graph"] = copy.deepcopy(self.graph_payload)
+        return sample
+
+    @staticmethod
+    def collate_fn(batch: Iterable[Dict[str, Any]]):
+        """Collate function that keeps a single copy of the static graph."""
+        batch = list(batch)
+        if not batch:
+            raise ValueError("Empty batch provided to collate_fn.")
+
+        graphs = [entry.get("graph") for entry in batch]
+        if any(graph is None for graph in graphs):
+            raise ValueError("Graph entry missing from batch sample.")
+
+        data_without_graph = [
+            {key: value for key, value in entry.items() if key != "graph"}
+            for entry in batch
+        ]
+        collated_data = default_collate(data_without_graph)
+        collated_data["graph"] = graphs[0]
+        return collated_data
+
+
 class WeatherDataModule(pl.LightningDataModule):
     """DataModule for weather data."""
 
@@ -1182,6 +1260,8 @@ class WeatherDataModule(pl.LightningDataModule):
         eval_init_times=[],
         dynamic_time_deltas=False,
         excluded_intervals=None,
+        graph_name: Union[str, None] = None,
+        graph_device: str = "cpu",
     ):
         super().__init__()
         self._datastore = datastore
@@ -1203,6 +1283,13 @@ class WeatherDataModule(pl.LightningDataModule):
         self.eval_split = eval_split
         self.eval_init_times = eval_init_times
         self.dynamic_time_deltas = dynamic_time_deltas
+        self.graph_name = graph_name
+        self.graph_device = graph_device
+        self._collate_fn = (
+            WeatherDatasetWithGraph.collate_fn
+            if graph_name is not None
+            else None
+        )
 
         if num_workers > 0:
             # BUG: There also seem to be issues with "spawn" and `gloo`, to be
@@ -1290,6 +1377,13 @@ class WeatherDataModule(pl.LightningDataModule):
             else:
                 self.train_dataset = self.make_training_dataset(time_slice=None)
 
+            if self.graph_name is not None:
+                self.val_dataset = WeatherDatasetWithGraph(
+                    self.val_dataset,
+                    graph_name=self.graph_name,
+                    device=self.graph_device,
+                )
+
             self.val_dataset = WeatherDataset(
                 datastore=self._datastore,
                 datastore_boundary=self._datastore_boundary,
@@ -1307,6 +1401,12 @@ class WeatherDataModule(pl.LightningDataModule):
             if self.eval_init_times:
                 self.val_dataset = EvalSubsetWrapper(
                     self.val_dataset, self.eval_init_times
+                )
+            if self.graph_name is not None:
+                self.val_dataset = WeatherDatasetWithGraph(
+                    self.val_dataset,
+                    graph_name=self.graph_name,
+                    device=self.graph_device,
                 )
 
         if stage == "test" or stage is None:
@@ -1328,6 +1428,12 @@ class WeatherDataModule(pl.LightningDataModule):
                 self.test_dataset = EvalSubsetWrapper(
                     self.test_dataset, self.eval_init_times
                 )
+            if self.graph_name is not None:
+                self.test_dataset = WeatherDatasetWithGraph(
+                    self.test_dataset,
+                    graph_name=self.graph_name,
+                    device=self.graph_device,
+                )
 
     def train_dataloader(self):
         """Load train dataset."""
@@ -1338,6 +1444,7 @@ class WeatherDataModule(pl.LightningDataModule):
             shuffle=True,
             multiprocessing_context=self.multiprocessing_context,
             persistent_workers=True,
+            collate_fn=self._collate_fn,
         )
 
     def val_dataloader(self):
@@ -1349,6 +1456,7 @@ class WeatherDataModule(pl.LightningDataModule):
             shuffle=False,
             multiprocessing_context=self.multiprocessing_context,
             persistent_workers=True,
+            collate_fn=self._collate_fn,
         )
 
     def test_dataloader(self):
@@ -1360,4 +1468,5 @@ class WeatherDataModule(pl.LightningDataModule):
             shuffle=False,
             multiprocessing_context=self.multiprocessing_context,
             persistent_workers=True,
+            collate_fn=self._collate_fn,
         )

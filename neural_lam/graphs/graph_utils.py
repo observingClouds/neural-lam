@@ -2,8 +2,10 @@
 import numpy as np
 import scipy
 import trimesh
-from neural_lam.graphs.icosahedral_mesh import TriangularMesh
+
+# First-party
 import neural_lam.graphs.graphcast_model_utils as gc_mu
+from neural_lam.graphs.icosahedral_mesh import TriangularMesh
 
 
 def node_cart_to_lat_lon(node_pos_cart):

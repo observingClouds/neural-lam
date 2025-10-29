@@ -1,15 +1,16 @@
 # Standard library
-from typing import Union
+from typing import Any, Dict, Union
 
 # Third-party
+import numpy as np
 import torch
 from torch import nn
-import numpy as np
 
 # Local
 from .. import utils
 from ..config import NeuralLAMConfig
 from ..datastore import BaseDatastore
+from ..graph_data import GraphSizes
 from ..interaction_net import InteractionNet
 from .ar_model import ARModel
 
@@ -26,6 +27,7 @@ class BaseGraphModel(ARModel):
         config: NeuralLAMConfig,
         datastore: BaseDatastore,
         datastore_boundary: Union[BaseDatastore, None],
+        graph_sizes: GraphSizes,
     ):
         super().__init__(
             args,
@@ -34,33 +36,11 @@ class BaseGraphModel(ARModel):
             datastore_boundary=datastore_boundary,
         )
 
-        # Load graph with static features
-        graph_dir_path = datastore.root_path / "graph" / args.graph_name
-        self.hierarchical, graph_ldict = utils.load_graph(
-            graph_dir_path=graph_dir_path,
-            datastore=datastore,
-        )
-        for name, attr_value in graph_ldict.items():
-            # NOTE: It would be good to rescale mesh node position features in
-            # exactly the same way as grid node position static features.
-            if name == "mesh_static_features":
-                # Rescale to [0,1] for lat/y and lon/x separately
-                # Does not work for hierachical BufferList format
-                #min_val = attr_value.min(dim=0, keepdim=True)[0]
-                #max_val = attr_value.max(dim=0, keepdim=True)[0]
-                #attr_value = (attr_value - min_val) / (max_val - min_val)
-                #attr_value = attr_value.to(torch.bfloat16)  # should match grid feature dtype
-                stacked = np.vstack([*attr_value.buffers()]) 
-                min_val = stacked.min(axis=0)
-                max_val = stacked.max(axis=0)
-                for i, b in enumerate(attr_value.buffers()):
-                    attr_value[i] = (b-min_val)/(max_val - min_val)
+        self.graph_sizes = graph_sizes
+        self.hierarchical = graph_sizes.hierarchical
+        self.current_graph: Union[dict[str, Any], None] = None
 
-            # Make BufferLists module members and register tensors as buffers
-            if isinstance(attr_value, torch.Tensor):
-                self.register_buffer(name, attr_value, persistent=False)
-            else:
-                setattr(self, name, attr_value)
+        self.num_mesh_nodes = graph_sizes.num_mesh_nodes
 
         # Specify dimensions of data
         utils.rank_zero_print(
@@ -76,8 +56,8 @@ class BaseGraphModel(ARModel):
             hidden_dim_grid = args.hidden_dim_grid
 
         # interior_dim from data + static
-        self.g2m_edges, g2m_dim = self.g2m_features.shape
-        self.m2g_edges, m2g_dim = self.m2g_features.shape
+        g2m_dim = graph_sizes.g2m_dim
+        m2g_dim = graph_sizes.m2g_dim
 
         # Define sub-models
         # Feature embedders for interior
@@ -124,7 +104,6 @@ class BaseGraphModel(ARModel):
         # GNNs
         # encoder
         self.g2m_gnn = InteractionNet(
-            self.g2m_edge_index,
             hidden_dim_grid,
             hidden_layers=args.hidden_layers,
             update_edges=False,
@@ -136,7 +115,6 @@ class BaseGraphModel(ARModel):
 
         # decoder
         self.m2g_gnn = InteractionNet(
-            self.m2g_edge_index,
             hidden_dim_grid,
             hidden_layers=args.hidden_layers,
             update_edges=False,
@@ -181,6 +159,31 @@ class BaseGraphModel(ARModel):
         Get the total number of mesh nodes in the used mesh graph
         """
         raise NotImplementedError("num_mesh_nodes not implemented")
+
+    def set_graph(self, graph: Dict[str, Any]):
+        """
+        Store graph tensors for the current batch on the correct device.
+        """
+        device = self.grid_static_features.device
+
+        def move_to_device(value):
+            if isinstance(value, torch.Tensor):
+                return value.to(device=device)
+            if isinstance(value, list):
+                return [move_to_device(v) for v in value]
+            return value
+
+        self.current_graph = {
+            key: move_to_device(val)
+            for key, val in graph.items()
+            if key != "hierarchical"
+        }
+        self.current_graph["hierarchical"] = graph["hierarchical"]
+        if self.current_graph["hierarchical"] != self.hierarchical:
+            raise ValueError(
+                "Graph hierarchy level changed between batches, "
+                "which is not supported."
+            )
 
     def prepare_clamping_params(
         self, config: NeuralLAMConfig, datastore: BaseDatastore
@@ -402,7 +405,14 @@ class BaseGraphModel(ARModel):
         forcing: (B, num_interior_nodes, forcing_dim)
         boundary_forcing: (B, num_boundary_nodes, boundary_forcing_dim)
         """
+        if self.current_graph is None:
+            raise RuntimeError(
+                "Graph data has not been set for the current batch. "
+                "Ensure the dataloader provides graph information via "
+                "WeatherDatasetWithGraph."
+            )
         batch_size = prev_state.shape[0]
+        graph = self.current_graph
 
         # Create full interior node features of shape
         # (B, num_interior_nodes, interior_dim)
@@ -440,8 +450,8 @@ class BaseGraphModel(ARModel):
         interior_emb = self.interior_embedder(
             interior_features
         )  # (B, num_interior_nodes, d_h)
-        g2m_emb = self.g2m_embedder(self.g2m_features)  # (M_g2m, d_h)
-        m2g_emb = self.m2g_embedder(self.m2g_features)  # (M_m2g, d_h)
+        g2m_emb = self.g2m_embedder(graph["g2m_features"])  # (M_g2m, d_h)
+        m2g_emb = self.m2g_embedder(graph["m2g_features"])  # (M_m2g, d_h)
         mesh_emb = self.embedd_mesh_nodes()
 
         if self.boundary_forced:
@@ -460,7 +470,10 @@ class BaseGraphModel(ARModel):
 
         # Encode to mesh
         mesh_rep = self.g2m_gnn(
-            full_grid_emb, mesh_emb_expanded, g2m_emb_expanded
+            full_grid_emb,
+            mesh_emb_expanded,
+            g2m_emb_expanded,
+            graph["g2m_edge_index"],
         )  # (B, num_mesh_nodes, d_h)
         # Also MLP with residual for grid representation
         grid_rep = interior_emb + self.encoding_grid_mlp(
@@ -479,7 +492,10 @@ class BaseGraphModel(ARModel):
         # Map back from mesh to grid
         m2g_emb_expanded = self.expand_to_batch(m2g_emb, batch_size)
         grid_rep = self.m2g_gnn(
-            mesh_rep, grid_rep, m2g_emb_expanded
+            mesh_rep,
+            grid_rep,
+            m2g_emb_expanded,
+            graph["m2g_edge_index"],
         )  # (B, num_interior_nodes, d_h)
 
         # Map to output dimension, only for grid

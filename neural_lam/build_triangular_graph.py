@@ -20,10 +20,11 @@ from .graphs.icosahedral_mesh import faces_to_edges
 
 # function from graphcast
 def _get_max_edge_distance(mesh):
-  senders, receivers = faces_to_edges(mesh.faces)
-  edge_distances = np.linalg.norm(
-      mesh.vertices[senders] - mesh.vertices[receivers], axis=-1)
-  return edge_distances.max()
+    senders, receivers = faces_to_edges(mesh.faces)
+    edge_distances = np.linalg.norm(
+        mesh.vertices[senders] - mesh.vertices[receivers], axis=-1
+    )
+    return edge_distances.max()
 
 
 def main(input_args=None):
@@ -338,7 +339,7 @@ def main(input_args=None):
                 f"{num_disc_mesh} disconnected mesh nodes"
             )
         )
-        #if not args.allow_disconnected:
+        # if not args.allow_disconnected:
         #    assert False, "Disconnected g2m nodes."
 
     # Get edge features for g2m

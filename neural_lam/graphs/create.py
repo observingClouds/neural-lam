@@ -2,13 +2,12 @@
 import numpy as np
 import scipy
 import torch
-import neural_lam.graphs.icosahedral_mesh as gc_im
-import neural_lam.graphs.graphcast_model_utils as gc_mu
 import trimesh
-
 
 # First-party
 import neural_lam.graphs.graph_utils as gutils
+import neural_lam.graphs.graphcast_model_utils as gc_mu
+import neural_lam.graphs.icosahedral_mesh as gc_im
 from neural_lam import utils
 
 # Keyword arguments to use when calling graphcast functions
@@ -24,10 +23,11 @@ GC_SPATIAL_FEATURES_KWARGS = {
 
 # function from graphcast
 def _get_max_edge_distance(mesh):
-  senders, receivers = gc_im.faces_to_edges(mesh.faces)
-  edge_distances = np.linalg.norm(
-      mesh.vertices[senders] - mesh.vertices[receivers], axis=-1)
-  return edge_distances.max()
+    senders, receivers = gc_im.faces_to_edges(mesh.faces)
+    edge_distances = np.linalg.norm(
+        mesh.vertices[senders] - mesh.vertices[receivers], axis=-1
+    )
+    return edge_distances.max()
 
 
 def inter_mesh_connection(from_mesh, to_mesh):

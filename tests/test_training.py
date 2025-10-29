@@ -12,6 +12,7 @@ from neural_lam import config as nlconfig
 from neural_lam.build_rectangular_graph import build_graph_from_archetype
 from neural_lam.datastore import DATASTORES
 from neural_lam.datastore.base import BaseRegularGridDatastore
+from neural_lam.graph_data import build_graph_sizes, load_graph
 from neural_lam.models.graph_lam import GraphLAM
 from neural_lam.weather_dataset import WeatherDataModule
 from tests.conftest import (
@@ -58,7 +59,7 @@ def test_training(datastore_name, datastore_boundary_name):
         # XXX: `devices` has to be set to 2 otherwise
         # neural_lam.models.ar_model.ARModel.aggregate_and_plot_metrics fails
         # because it expects to aggregate over multiple devices
-        devices=2,
+        devices=1,
         log_every_n_steps=1,
     )
 
@@ -89,7 +90,10 @@ def test_training(datastore_name, datastore_boundary_name):
         num_future_forcing_steps=1,
         num_past_boundary_steps=1,
         num_future_boundary_steps=1,
+        graph_name=flat_graph_name,
     )
+    graph_features_and_edges = load_graph(graph_dir_path)
+    graph_sizes = build_graph_sizes(graph_features_and_edges)
 
     class ModelArgs:
         output_std = False
@@ -125,6 +129,7 @@ def test_training(datastore_name, datastore_boundary_name):
         datastore=datastore,
         datastore_boundary=datastore_boundary,
         config=config,
+        graph_sizes=graph_sizes,
     )  # noqa
 
     wandb.init()

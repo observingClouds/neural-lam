@@ -2,6 +2,7 @@
 # For LAM model project
 # by Simon Adamov, simon.adamov@meteoswiss.ch
 
+# Standard library
 import argparse
 import io
 import os
@@ -68,12 +69,14 @@ def generate_land_sea_mask(lat, lon, tempdir, projection, high_res_factor=10):
     )
 
     # Maintain y, x order in reshaping
-    aggregated_out_image = high_res_out_image.reshape((
-        ny,
-        high_res_factor,
-        nx,
-        high_res_factor,
-    )).mean(axis=(1, 3))
+    aggregated_out_image = high_res_out_image.reshape(
+        (
+            ny,
+            high_res_factor,
+            nx,
+            high_res_factor,
+        )
+    ).mean(axis=(1, 3))
 
     # Create DataArray with consistent y, x dimensions
     return xr.DataArray(

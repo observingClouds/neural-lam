@@ -2,9 +2,11 @@
 # For LAM model project
 # by Joel Oskarsson, joel.oskarsson@outlook.com
 
+# Standard library
 import argparse
 import os
 
+# Third-party
 import numpy as np
 import pandas as pd
 import xarray as xr

@@ -416,9 +416,13 @@ class MDPDatastore(BaseRegularGridDatastore):
                 "no state data found in datastore"
                 "returning grid shape from forcing data"
             )
-            da_grid_reference = self._ds["forcing"]  #self.unstack_grid_coords(self._ds["forcing"])
+            da_grid_reference = self._ds[
+                "forcing"
+            ]  # self.unstack_grid_coords(self._ds["forcing"])
         else:
-            da_grid_reference = self._ds["state"]  #self.unstack_grid_coords(self._ds["state"])
+            da_grid_reference = self._ds[
+                "state"
+            ]  # self.unstack_grid_coords(self._ds["state"])
         da_x, da_y = da_grid_reference.x, da_grid_reference.y
         assert da_x.ndim == da_y.ndim == 1
         return CartesianGridShape(x=da_x.size, y=da_y.size)
@@ -451,7 +455,9 @@ class MDPDatastore(BaseRegularGridDatastore):
             da_xs = ds_category.x
             da_ys = ds_category.y
 
-            assert da_xs.ndim == da_ys.ndim == 1, "x and y coordinates must be 1D"
+            assert (
+                da_xs.ndim == da_ys.ndim == 1
+            ), "x and y coordinates must be 1D"
 
             da_x, da_y = xr.broadcast(da_xs, da_ys)
             da_xy = xr.concat([da_x, da_y], dim="grid_coord")
@@ -473,13 +479,17 @@ class MDPDatastore(BaseRegularGridDatastore):
                 da_x = self._ds[category].x
                 da_y = self._ds[category].y
             except AttributeError:
-                da_x = np.rad2deg(self._ds[category].clon) #xr.DataArray(range(len(self._ds['grid_index'])), dims='grid_index')
-                da_y = np.rad2deg(self._ds[category].clat) #xr.DataArray(range(len(self._ds['grid_index'])), dims='grid_index')
+                da_x = np.rad2deg(
+                    self._ds[category].clon
+                )  # xr.DataArray(range(len(self._ds['grid_index'])), dims='grid_index')
+                da_y = np.rad2deg(
+                    self._ds[category].clat
+                )  # xr.DataArray(range(len(self._ds['grid_index'])), dims='grid_index')
             da_xy = xr.concat([da_x, da_y], dim="grid_coord").transpose(
-                    "grid_index",
-                    "grid_coord",
-                )
-            
+                "grid_index",
+                "grid_coord",
+            )
+
         return da_xy.values
 
     @functools.lru_cache
