@@ -33,9 +33,10 @@ def main(input_args=None):
         description="Train or evaluate NeurWP models for LAM"
     )
     parser.add_argument(
-        "--config_path",
+        "--config_paths",
+        nargs="+",
         type=str,
-        help="Path to the configuration for neural-lam",
+        help="Paths to the configurations for neural-lam",
     )
     parser.add_argument(
         "--model",
@@ -104,10 +105,11 @@ def main(input_args=None):
 
     # Model architecture
     parser.add_argument(
-        "--graph_name",
+        "--graph_names",
         type=str,
-        default="multiscale",
-        help="Graph to load and use in graph-based model (default: multiscale)",
+        nargs="+",
+        default=["multiscale"],
+        help="Graphs to load and use in graph-based model (default: multiscale)",
     )
     parser.add_argument(
         "--hidden_dim",
@@ -321,8 +323,8 @@ def main(input_args=None):
 
     # Asserts for arguments
     assert (
-        args.config_path is not None
-    ), "Specify your config with --config_path"
+        len(args.config_paths) > 0
+    ), "Specify at least one config with --config_paths"
     assert args.model in MODELS, f"Unknown model: {args.model}"
     assert args.eval in (
         None,
@@ -345,25 +347,31 @@ def main(input_args=None):
     seed.seed_everything(args.seed)
 
     # Load neural-lam configuration and datastore to use
-    config, datastore, datastore_boundary = load_config_and_datastores(
-        config_path=args.config_path
-    )
+    # Load all neural-lam configurations and datastores
+    configs = []
+    datastores = []
+    datastores_boundary = []
+    for config_path in args.config_paths:
+        c, ds, dsb = load_config_and_datastores(config_path)
+        configs.append(c)
+        datastores.append(ds)
+        datastores_boundary.append(dsb)
 
     # Select model class
     ModelClass = MODELS[args.model]
 
     # Prepare graph metadata for graph-based models
     graph_sizes = None
-    graph_name = args.graph_name if issubclass(ModelClass, BaseGraphModel) else None
-    if graph_name is not None:
-        graph_dir_path = datastore.root_path / "graph" / graph_name
-        graph_features_and_edges = load_graph(graph_dir_path, datastore)
+    graph_names = args.graph_names if issubclass(ModelClass, BaseGraphModel) else None
+    if graph_names is not None:
+        graph_dir_path = datastores[0].root_path / "graph" / graph_names[0]
+        graph_features_and_edges = load_graph(graph_dir_path, datastores[0])
         graph_sizes = build_graph_sizes(graph_features_and_edges)
 
     # Create datamodule
     data_module = WeatherDataModule(
-        datastore=datastore,
-        datastore_boundary=datastore_boundary,
+        datastores=datastores,
+        datastores_boundary=datastores_boundary,
         ar_steps_train=args.ar_steps_train,
         ar_steps_eval=args.ar_steps_eval,
         standardize=True,
@@ -377,8 +385,8 @@ def main(input_args=None):
         eval_split=args.eval if args.eval is not None else "test",
         eval_init_times=args.eval_init_times,
         dynamic_time_deltas=args.dynamic_time_deltas,
-        excluded_intervals=config.training.excluded_intervals,
-        graph_name=graph_name,
+        excluded_intervals=configs[0].training.excluded_intervals,
+        graph_names=graph_names,
     )
 
     # Instantiate model + trainer
@@ -406,18 +414,18 @@ def main(input_args=None):
         model = ModelClass.load_from_checkpoint(
             args.load,
             args=args,
-            config=config,
-            datastore=datastore,
-            datastore_boundary=datastore_boundary,
-            graph_sizes=graph_sizes if graph_name is not None else None,
+            config=configs[0],
+            datastore=datastores[0],
+            datastore_boundary=datastores_boundary[0],
+            graph_sizes=graph_sizes if graph_names is not None else None,
         )
     else:
         model = ModelClass(
             args,
-            config=config,
-            datastore=datastore,
-            datastore_boundary=datastore_boundary,
-            graph_sizes=graph_sizes if graph_name is not None else None,
+            config=configs[0],
+            datastore=datastores[0],
+            datastore_boundary=datastores_boundary[0],
+            graph_sizes=graph_sizes if graph_names is not None else None,
         )
 
     if args.eval:
@@ -454,7 +462,7 @@ def main(input_args=None):
     )
 
     training_logger = utils.setup_training_logger(
-        datastore=datastore, args=args, run_name=run_name
+        datastore=datastores[0], args=args, run_name=run_name
     )
 
     trainer = pl.Trainer(

@@ -3,7 +3,7 @@ import copy
 import datetime
 import warnings
 from pathlib import Path
-from typing import Any, Dict, Iterable, Union
+from typing import Any, Dict, Iterable, Union, List
 
 # Third-party
 import numpy as np
@@ -1243,8 +1243,8 @@ class WeatherDataModule(pl.LightningDataModule):
 
     def __init__(
         self,
-        datastore: BaseDatastore,
-        datastore_boundary: BaseDatastore,
+        datastores: List[BaseDatastore],
+        datastores_boundary: List[BaseDatastore],
         ar_steps_train=3,
         ar_steps_eval=25,
         standardize=True,
@@ -1260,12 +1260,12 @@ class WeatherDataModule(pl.LightningDataModule):
         eval_init_times=[],
         dynamic_time_deltas=False,
         excluded_intervals=None,
-        graph_name: Union[str, None] = None,
+        graph_names: Union[Dict[str, str], None] = None,
         graph_device: str = "cpu",
     ):
         super().__init__()
-        self._datastore = datastore
-        self._datastore_boundary = datastore_boundary
+        self._datastores = {k: v for k, v in zip (graph_names, datastores)} if graph_names else {None: datastores[0]}
+        self._datastores_boundary = {k: v for k, v in zip (graph_names, datastores_boundary)} if graph_names else {None: datastores_boundary[0]}
         self.num_past_forcing_steps = num_past_forcing_steps
         self.num_future_forcing_steps = num_future_forcing_steps
         self.num_past_boundary_steps = num_past_boundary_steps
@@ -1283,11 +1283,11 @@ class WeatherDataModule(pl.LightningDataModule):
         self.eval_split = eval_split
         self.eval_init_times = eval_init_times
         self.dynamic_time_deltas = dynamic_time_deltas
-        self.graph_name = graph_name
+        self.graph_names = graph_names
         self.graph_device = graph_device
         self._collate_fn = (
             WeatherDatasetWithGraph.collate_fn
-            if graph_name is not None
+            if graph_names is not None
             else None
         )
 
@@ -1314,10 +1314,10 @@ class WeatherDataModule(pl.LightningDataModule):
         else:
             self.excluded_intervals = []
 
-    def make_training_dataset(self, time_slice):
+    def make_training_dataset(self, time_slice, graph_name=None):
         return WeatherDataset(
-            datastore=self._datastore,
-            datastore_boundary=self._datastore_boundary,
+            datastore=self._datastores[graph_name],
+            datastore_boundary=self._datastores_boundary[graph_name],
             split="train",
             ar_steps=self.ar_steps_train,
             standardize=self.standardize,
@@ -1334,66 +1334,77 @@ class WeatherDataModule(pl.LightningDataModule):
     def setup(self, stage=None):
         if stage == "fit" or stage is None:
             if self.excluded_intervals:
-                # Swiss-cheese strategy
-                # Figure out which time-intervals to include
-                full_time_interval = self._datastore.get_dataarray(
-                    category="state", split="train"
-                ).time
-
-                # Iterate over times and exclude intervals
-                step_length = self._datastore.step_length
-                ds_intervals = []
-                # Start time of current interval
-                interval_start_time = full_time_interval[0].to_numpy()
-                for exc_start, exc_end in self.excluded_intervals:
-                    # Add interval up to current excluded
-                    ds_intervals.append(
-                        slice(interval_start_time, exc_start - step_length)
-                    )
-                    # Start next interval after end of excluded
-                    interval_start_time = exc_end + step_length
-
-                # Finish last interval
-                ds_intervals.append(
-                    slice(
-                        interval_start_time, full_time_interval[-1].to_numpy()
-                    )
+                raise NotImplementedError(
+                    "Excluded intervals with multiple datastores not yet "
+                    "implemented"
                 )
+                # # Swiss-cheese strategy
+                # # Figure out which time-intervals to include
+                # full_time_interval = self._datastore.get_dataarray(
+                #     category="state", split="train"
+                # ).time
 
-                # Check that all date slices are in correct order
-                for time_slice in ds_intervals:
-                    assert time_slice.start < time_slice.stop, (
-                        "Can not make training subset from "
-                        f"{time_slice.start} to {time_slice.stop}"
-                    )
+                # # Iterate over times and exclude intervals
+                # step_length = self._datastore.step_length
+                # ds_intervals = []
+                # # Start time of current interval
+                # interval_start_time = full_time_interval[0].to_numpy()
+                # for exc_start, exc_end in self.excluded_intervals:
+                #     # Add interval up to current excluded
+                #     ds_intervals.append(
+                #         slice(interval_start_time, exc_start - step_length)
+                #     )
+                #     # Start next interval after end of excluded
+                #     interval_start_time = exc_end + step_length
 
-                # Create and concatenate all datasets
-                train_datasets = [
-                    self.make_training_dataset(time_slice=time_slice)
-                    for time_slice in ds_intervals
-                ]
-                if self.graph_name is not None:
+                # # Finish last interval
+                # ds_intervals.append(
+                #     slice(
+                #         interval_start_time, full_time_interval[-1].to_numpy()
+                #     )
+                # )
+
+                # # Check that all date slices are in correct order
+                # for time_slice in ds_intervals:
+                #     assert time_slice.start < time_slice.stop, (
+                #         "Can not make training subset from "
+                #         f"{time_slice.start} to {time_slice.stop}"
+                #     )
+
+                # # Create and concatenate all datasets
+                # train_datasets = [
+                #     self.make_training_dataset(time_slice=time_slice)
+                #     for time_slice in ds_intervals
+                # ]
+                # if self.graph_name is not None:
+                #     train_datasets = [
+                #         WeatherDatasetWithGraph(
+                #             ds,
+                #             graph_name=self.graph_name,
+                #             device=self.graph_device,
+                #         )
+                #         for ds in train_datasets
+                #     ]
+                # self.train_dataset = torch.utils.data.ConcatDataset(train_datasets)
+            else:
+                train_datasets = {graph: self.make_training_dataset(time_slice=None, graph_name=graph) for graph in self.graph_names}
+                if self.graph_names is not None:
                     train_datasets = [
                         WeatherDatasetWithGraph(
                             ds,
-                            graph_name=self.graph_name,
+                            graph_name=graph,
                             device=self.graph_device,
                         )
-                        for ds in train_datasets
+                        for graph, ds in train_datasets.items()
                     ]
+                else:
+                    train_datasets = list(train_datasets.values())
                 self.train_dataset = torch.utils.data.ConcatDataset(train_datasets)
-            else:
-                self.train_dataset = self.make_training_dataset(time_slice=None)
-                if self.graph_name is not None:
-                    self.train_dataset = WeatherDatasetWithGraph(
-                        self.train_dataset,
-                        graph_name=self.graph_name,
-                        device=self.graph_device,
-                    )
+                import ipdb; ipdb.set_trace()
 
             self.val_dataset = WeatherDataset(
-                datastore=self._datastore,
-                datastore_boundary=self._datastore_boundary,
+                datastore=list(self._datastores.values())[0],
+                datastore_boundary=list(self._datastores_boundary.values())[0],
                 split="val",
                 ar_steps=self.ar_steps_eval,
                 standardize=self.standardize,
@@ -1410,17 +1421,17 @@ class WeatherDataModule(pl.LightningDataModule):
                 self.val_dataset = EvalSubsetWrapper(
                     self.val_dataset, self.eval_init_times
                 )
-            if self.graph_name is not None:
+            if self.graph_names is not None:
                 self.val_dataset = WeatherDatasetWithGraph(
                     self.val_dataset,
-                    graph_name=self.graph_name,
+                    graph_name=self.graph_names[0],
                     device=self.graph_device,
                 )
 
         if stage == "test" or stage is None:
             self.test_dataset = WeatherDataset(
-                datastore=self._datastore,
-                datastore_boundary=self._datastore_boundary,
+                datastore=list(self._datastores.values())[0],
+                datastore_boundary=list(self._datastores_boundary.values())[0],
                 split=self.eval_split,
                 ar_steps=self.ar_steps_eval,
                 standardize=self.standardize,
@@ -1436,10 +1447,10 @@ class WeatherDataModule(pl.LightningDataModule):
                 self.test_dataset = EvalSubsetWrapper(
                     self.test_dataset, self.eval_init_times
                 )
-            if self.graph_name is not None:
+            if self.graph_names is not None:
                 self.test_dataset = WeatherDatasetWithGraph(
                     self.test_dataset,
-                    graph_name=self.graph_name,
+                    graph_name=self.graph_names[0],
                     device=self.graph_device,
                 )
 
