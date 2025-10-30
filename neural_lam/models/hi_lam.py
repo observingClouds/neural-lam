@@ -86,7 +86,6 @@ class HiLAM(BaseHiGraphModel):
         return nn.ModuleList(
             [
                 InteractionNet(
-                    edge_index,
                     args.hidden_dim,
                     hidden_layers=args.hidden_layers,
                 )
