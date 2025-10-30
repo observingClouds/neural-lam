@@ -118,12 +118,12 @@ class HiLAMParallel(BaseHiGraphModel):
             mesh_edge_rep, self.edge_split_sections, dim=1
         )
 
-        mesh_same_rep = mesh_edge_rep_sections[: self.num_levels]
+        mesh_same_rep = mesh_edge_rep_sections[: self.graph_sizes.num_levels]
         mesh_up_rep = mesh_edge_rep_sections[
-            self.num_levels : self.num_levels + (self.num_levels - 1)
+            self.graph_sizes.num_levels : self.graph_sizes.num_levels + (self.graph_sizes.num_levels - 1)
         ]
         mesh_down_rep = mesh_edge_rep_sections[
-            self.num_levels + (self.num_levels - 1) :
+            self.graph_sizes.num_levels + (self.graph_sizes.num_levels - 1) :
         ]  # Last are down edges
 
         # TODO: We return all, even though only down edges really are used

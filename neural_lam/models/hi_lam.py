@@ -61,7 +61,7 @@ class HiLAM(BaseHiGraphModel):
                     args.hidden_dim,
                     hidden_layers=args.hidden_layers,
                 )
-                for _ in range(self.num_levels)
+                for _ in range(self.graph_sizes.num_levels)
             ]
         )
 
@@ -75,7 +75,7 @@ class HiLAM(BaseHiGraphModel):
                     args.hidden_dim,
                     hidden_layers=args.hidden_layers,
                 )
-                for _ in range(self.num_levels - 1)
+                for _ in range(self.graph_sizes.num_levels - 1)
             ]
         )
 
@@ -89,7 +89,7 @@ class HiLAM(BaseHiGraphModel):
                     args.hidden_dim,
                     hidden_layers=args.hidden_layers,
                 )
-                for _ in range(self.num_levels - 1)
+                for _ in range(self.graph_sizes.num_levels - 1)
             ]
         )
 
@@ -112,7 +112,7 @@ class HiLAM(BaseHiGraphModel):
         mesh_same_edge_index = self.current_graph["m2m_edge_index"]
         mesh_down_edge_index = self.current_graph["mesh_down_edge_index"]
         # Run same level processing on level L
-        top_level = self.num_levels - 1
+        top_level = self.graph_sizes.num_levels - 1
         mesh_rep_levels[-1], mesh_same_rep[-1] = same_gnns[-1](
             mesh_rep_levels[-1],
             mesh_rep_levels[-1],
@@ -122,7 +122,7 @@ class HiLAM(BaseHiGraphModel):
 
         # Let level_l go from L-1 to 0
         for level_l, down_gnn, same_gnn in zip(
-            range(self.num_levels - 2, -1, -1),
+            range(self.graph_sizes.num_levels - 2, -1, -1),
             reversed(down_gnns),
             reversed(same_gnns[:-1]),
         ):
