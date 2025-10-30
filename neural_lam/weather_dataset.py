@@ -972,7 +972,7 @@ class WeatherDataset(torch.utils.data.Dataset):
             "init_states": init_states,
             "target_states": target_states,
             "forcing": forcing,
-            "boundary": boundary,
+            "boundary_forcing": boundary,
             "batch_times": target_times,
         }
 
@@ -1368,21 +1368,28 @@ class WeatherDataModule(pl.LightningDataModule):
                     )
 
                 # Create and concatenate all datasets
-                self.train_dataset = torch.utils.data.ConcatDataset(
-                    [
-                        self.make_training_dataset(time_slice=time_slice)
-                        for time_slice in ds_intervals
+                train_datasets = [
+                    self.make_training_dataset(time_slice=time_slice)
+                    for time_slice in ds_intervals
+                ]
+                if self.graph_name is not None:
+                    train_datasets = [
+                        WeatherDatasetWithGraph(
+                            ds,
+                            graph_name=self.graph_name,
+                            device=self.graph_device,
+                        )
+                        for ds in train_datasets
                     ]
-                )
+                self.train_dataset = torch.utils.data.ConcatDataset(train_datasets)
             else:
                 self.train_dataset = self.make_training_dataset(time_slice=None)
-
-            if self.graph_name is not None:
-                self.val_dataset = WeatherDatasetWithGraph(
-                    self.val_dataset,
-                    graph_name=self.graph_name,
-                    device=self.graph_device,
-                )
+                if self.graph_name is not None:
+                    self.train_dataset = WeatherDatasetWithGraph(
+                        self.train_dataset,
+                        graph_name=self.graph_name,
+                        device=self.graph_device,
+                    )
 
             self.val_dataset = WeatherDataset(
                 datastore=self._datastore,
@@ -1398,6 +1405,7 @@ class WeatherDataModule(pl.LightningDataModule):
                 boundary_subsample_step=self.boundary_subsample_step,
                 dynamic_time_deltas=self.dynamic_time_deltas,
             )
+
             if self.eval_init_times:
                 self.val_dataset = EvalSubsetWrapper(
                     self.val_dataset, self.eval_init_times

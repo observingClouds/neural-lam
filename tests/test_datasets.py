@@ -66,7 +66,7 @@ def test_dataset_item_shapes(datastore_name, datastore_boundary_name):
     init_states = item["init_states"]
     target_states = item["target_states"]
     forcing = item["forcing"]
-    boundary = item["boundary"]
+    boundary = item["boundary_forcing"]
     batch_times = item["batch_times"]
 
     # unpack the item, this is the current return signature for
