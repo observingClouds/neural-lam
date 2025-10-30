@@ -1203,7 +1203,7 @@ class WeatherDatasetWithGraph(torch.utils.data.Dataset):
         )
 
         graph_edges_and_features = load_graph(
-            graph_dir_path=self.graph_dir_path, device=self.device
+            graph_dir_path=self.graph_dir_path, datastore=self.datastore, device=self.device
         )
         self.graph_edges_and_features = graph_edges_and_features
         self.graph_sizes = build_graph_sizes(graph_edges_and_features)

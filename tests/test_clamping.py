@@ -57,7 +57,7 @@ def test_clamping():
         ),
     )
 
-    graph_features_and_edges = load_graph(graph_dir_path)
+    graph_features_and_edges = load_graph(graph_dir_path, datastore=datastore)
     graph_sizes = build_graph_sizes(graph_features_and_edges)
 
     model = GraphLAM(

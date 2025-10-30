@@ -17,6 +17,7 @@ from .config import load_config_and_datastores
 from .models import GraphLAM, HiLAM, HiLAMParallel
 from .models.base_graph_model import BaseGraphModel
 from .weather_dataset import WeatherDataModule, WeatherDatasetWithGraph
+from .graph_data import build_graph_sizes, load_graph
 
 MODELS = {
     "graph_lam": GraphLAM,
@@ -353,12 +354,11 @@ def main(input_args=None):
 
     # Prepare graph metadata for graph-based models
     graph_sizes = None
-    graph_name = args.graph if issubclass(ModelClass, BaseGraphModel) else None
+    graph_name = args.graph_name if issubclass(ModelClass, BaseGraphModel) else None
     if graph_name is not None:
         graph_dir_path = datastore.root_path / "graph" / graph_name
-        _, graph_sizes = WeatherDatasetWithGraph.load_graph(
-            graph_dir_path=graph_dir_path
-        )
+        graph_features_and_edges = load_graph(graph_dir_path, datastore)
+        graph_sizes = build_graph_sizes(graph_features_and_edges)
 
     # Create datamodule
     data_module = WeatherDataModule(
