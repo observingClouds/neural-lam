@@ -1197,6 +1197,7 @@ class WeatherDatasetWithGraph(torch.utils.data.Dataset):
         self.graph_name = graph_name
         self.device = device
         self.datastore = weather_dataset.datastore
+        self.datastore_boundary = weather_dataset.datastore_boundary
 
         self.graph_dir_path = (
             Path(self.datastore.root_path) / "graph" / self.graph_name
@@ -1209,6 +1210,14 @@ class WeatherDatasetWithGraph(torch.utils.data.Dataset):
         self.graph_sizes = build_graph_sizes(graph_edges_and_features)
         self.graph_payload = graph_edges_and_features.as_batch_dict()
         self.hierarchical = self.graph_sizes.hierarchical
+
+        # Load boundary static features and add to graph_payload
+        da_boundary_static_features = self.datastore_boundary.get_dataarray(
+            category="static", split=None, standardize=True
+        )
+        self.graph_payload["boundary_static_features"] = torch.tensor(
+            da_boundary_static_features.values, dtype=torch.float32
+        ).to(device=self.device)
 
     def __len__(self):
         return len(self.weather_dataset)

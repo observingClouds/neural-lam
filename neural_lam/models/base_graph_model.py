@@ -174,7 +174,7 @@ class BaseGraphModel(ARModel):
         self.current_graph = {
             key: move_to_device(val)
             for key, val in graph.items()
-            if key != "hierarchical"
+            if key not in ["hierarchical", "boundary_static_features"]
         }
         self.current_graph["hierarchical"] = graph["hierarchical"]
         if self.current_graph["hierarchical"] != self.hierarchical:
@@ -182,6 +182,12 @@ class BaseGraphModel(ARModel):
                 "Graph hierarchy level changed between batches, "
                 "which is not supported."
             )
+
+        # Set boundary_static_features for multi-domain support
+        if "boundary_static_features" in graph:
+            self.current_boundary_static_features = graph["boundary_static_features"].to(device)
+        else:
+            self.current_boundary_static_features = None
 
     def prepare_clamping_params(
         self, config: NeuralLAMConfig, datastore: BaseDatastore
@@ -428,13 +434,21 @@ class BaseGraphModel(ARModel):
             # sin-encode time deltas for boundary forcing
             boundary_forcing = self.encode_forcing_time_deltas(boundary_forcing)
 
+            # Use per-domain static features if available, else model's
+            current_boundary_static = (
+                self.current_boundary_static_features
+                if self.current_boundary_static_features is not None
+                else self.boundary_static_features
+            )
+
             # Create full boundary node features of shape
             # (B, num_boundary_nodes, boundary_dim)
             boundary_features = torch.cat(
                 (
                     boundary_forcing,
                     self.expand_to_batch(
-                        self.boundary_static_features, batch_size
+                        current_boundary_static,
+                        batch_size
                     ),
                 ),
                 dim=-1,
