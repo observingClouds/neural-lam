@@ -162,7 +162,7 @@ class BaseGraphModel(ARModel):
         """
         Store graph tensors for the current batch on the correct device.
         """
-        device = self.grid_static_features.device
+        device = self.interior_static_features.device
 
         def move_to_device(value):
             if isinstance(value, torch.Tensor):

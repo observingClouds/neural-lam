@@ -1190,7 +1190,7 @@ class WeatherDatasetWithGraph(torch.utils.data.Dataset):
         self,
         weather_dataset: WeatherDataset,
         graph_name: str,
-       device: str = "cpu",
+        device: str = "cpu",
     ):
         super().__init__()
         self.weather_dataset = weather_dataset
