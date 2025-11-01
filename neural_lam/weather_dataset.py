@@ -1409,7 +1409,6 @@ class WeatherDataModule(pl.LightningDataModule):
                 else:
                     train_datasets = list(train_datasets.values())
                 self.train_dataset = torch.utils.data.ConcatDataset(train_datasets)
-                import ipdb; ipdb.set_trace()
 
             self.val_dataset = WeatherDataset(
                 datastore=list(self._datastores.values())[0],
