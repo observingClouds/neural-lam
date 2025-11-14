@@ -273,11 +273,16 @@ class ARModel(pl.LightningModule):
         opt = torch.optim.AdamW(
             self.parameters(), lr=self.args.lr, betas=(0.9, 0.95)
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        scheduler1 = torch.optim.lr_scheduler.LinearLR(
+            opt,
+            total_iters=10
+        )
+        scheduler2 = torch.optim.lr_scheduler.CosineAnnealingLR(
             opt,
             T_max=self.args.epochs,
             eta_min=self.args.min_lr if hasattr(self.args, "min_lr") else 0.0,
         )
+        scheduler = torch.optim.lr_scheduler.ChainedScheduler([scheduler1,scheduler2], optimizer=opt)
         return {
             "optimizer": opt,
             "lr_scheduler": {
