@@ -282,6 +282,11 @@ class ARModel(pl.LightningModule):
             T_max=self.args.epochs,
             eta_min=self.args.min_lr if hasattr(self.args, "min_lr") else 0.0,
         )
+        scheduler3 = torch.optim.lr_scheduler.ConstantLR(
+            opt,
+            factor=1,
+            total_iters=0,
+        )
         scheduler = torch.optim.lr_scheduler.ChainedScheduler([scheduler1,scheduler2], optimizer=opt)
         return {
             "optimizer": opt,
