@@ -145,7 +145,7 @@ class DummyDatastore(BaseRegularGridDatastore):
             )
 
             if category != "static":
-                dt = datetime.timedelta(hours=self.step_length)
+                dt = self.step_length
                 times = [self.T0 + dt * i for i in range(n_timesteps)]
                 self.ds.coords["time"] = times
 
@@ -191,14 +191,14 @@ class DummyDatastore(BaseRegularGridDatastore):
         return {}
 
     @property
-    def step_length(self) -> int:
-        """The step length of the dataset in hours.
+    def step_length(self) -> datetime.timedelta:
+        """The step length of the dataset as a timedelta object.
 
         Returns:
-            int: The step length in hours.
+            datetime.timedelta: The step length as a timedelta object.
 
         """
-        return 1
+        return datetime.timedelta(hours=1)
 
     def get_vars_names(self, category: str) -> list[str]:
         """Get the names of the variables in the given category.

@@ -4,6 +4,7 @@ neural-lam v0.1.0.
 """
 
 # Standard library
+import datetime
 import functools
 import re
 import warnings
@@ -659,12 +660,12 @@ class NpyFilesDatastoreMEPS(BaseRegularGridDatastore):
             return arr
 
     @property
-    def step_length(self) -> int:
+    def step_length(self) -> datetime.timedelta:
         """The length of each time step in hours.
 
         Returns
         -------
-        int
+        datetime.timedelta
             The length of each time step in hours.
 
         """
