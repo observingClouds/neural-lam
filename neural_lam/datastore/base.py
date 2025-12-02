@@ -2,6 +2,7 @@
 import abc
 import collections
 import dataclasses
+import datetime as dt
 import functools
 from functools import cached_property
 from pathlib import Path
@@ -80,11 +81,11 @@ class BaseDatastore(abc.ABC):
 
     @property
     @abc.abstractmethod
-    def step_length(self) -> int:
-        """The step length of the dataset in hours.
+    def step_length(self) -> dt.timedelta:
+        """The temporal stepping of the dataset.
 
         Returns:
-            int: The step length in hours.
+            timedelta: The step length as a timedelta object.
 
         """
         pass

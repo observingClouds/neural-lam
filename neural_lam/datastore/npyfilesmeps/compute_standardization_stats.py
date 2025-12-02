@@ -143,8 +143,8 @@ def main(
         Path to datastore config file
     batch_size : int
         Batch size when iterating over the dataset
-    step_length : int
-        Step length in hours to consider single time step
+    step_length : datetime.timedelta
+        Step length to consider single time step
     n_workers : int
         Number of workers in data loader
     distributed : bool

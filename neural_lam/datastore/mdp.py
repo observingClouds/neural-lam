@@ -1,6 +1,7 @@
 # Standard library
 import copy
 import functools
+import datetime as dt
 import warnings
 from functools import cached_property
 from pathlib import Path
@@ -159,18 +160,17 @@ class MDPDatastore(BaseRegularGridDatastore):
         return self._config
 
     @property
-    def step_length(self) -> int:
-        """The length of the time steps in hours.
+    def step_length(self) -> dt.timedelta:
+        """The temporal stepping of the dataset.
 
-        Returns
-        -------
-        int
-            The length of the time steps in hours.
+        Returns:
+            timedelta: The step length as a timedelta object.
 
         """
         diff_dim = "elapsed_forecast_duration" if self.is_forecast else "time"
         da_dt = self._ds[diff_dim].diff(diff_dim)
-        return (da_dt.dt.seconds[0]).item()
+        total_sec = da_dt.dt.total_seconds().isel(time=0)
+        return dt.timedelta(seconds=total_sec)
 
     def get_vars_units(self, category: str) -> List[str]:
         """Return the units of the variables in the given category.
