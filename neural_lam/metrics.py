@@ -84,6 +84,22 @@ def wmse(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True):
     )
 
 
+def advection(pred, target, state, mask=None, average_grid=True, sum_vars=True):
+    """
+    Mean advection of prediction based on difference between pred and target and pred and state.
+    """
+    diff_t = torch.abs(pred - target)
+    diff_s = torch.abs(pred - state)
+    entry_advection = diff_s / diff_t # >1 indicates advection might be present
+
+    return mask_and_reduce_metric(
+        entry_advection,
+        mask=mask,
+        average_grid=average_grid,
+        sum_vars=sum_vars,
+    )
+
+
 def mse(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True):
     """
     (Unweighted) Mean Squared Error

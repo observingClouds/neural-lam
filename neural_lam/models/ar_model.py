@@ -506,7 +506,12 @@ class ARModel(pl.LightningModule):
             },
             "train_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
-
+        feature_names = self._datastore.get_vars_names("state")
+        t2m_feat_idx = feature_names.index("t_2m")
+        prev_state = batch['init_states'][:, 1, :, t2m_feat_idx]  # (B, 2, num_grid_nodes, d_f)
+        log_dict[f"advection_{feature_names[t2m_feat_idx]}"] = metrics.advection(
+                prediction[:,0,:,t2m_feat_idx], target[:,0,:,t2m_feat_idx], prev_state, sum_vars=False
+        ).mean()
         self.log_dict(
             log_dict,
             prog_bar=True,
@@ -575,6 +580,11 @@ class ARModel(pl.LightningModule):
             },
             "val_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
+                # Use the model's immediate previous state as input to the advection baseline
+        prev_state = batch['init_states'][:, 1, :, 1]  # (B, 2, num_grid_nodes, d_f)
+        val_log_dict["advection"] = metrics.advection(
+                prediction[:,0,:,1], target[:,0,:,1], prev_state, sum_vars=False
+        ).mean()
         self.log_dict(
             val_log_dict,
             on_step=False,
