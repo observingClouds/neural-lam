@@ -112,10 +112,16 @@ allow-any-import-level = "neural_lam"
 min-similarity-lines = 10
 
 
-[tool.pdm.version]
-source = "scm"
+[tool.hatch.version]
+source = "uv-dynamic-versioning"
 fallback_version = "0.0.0"
 
+[tool.uv-dynamic-versioning]
+dirty = true
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [build-system]
-requires = ["pdm-backend"]
-build-backend = "pdm.backend"
+requires = ["hatchling", "uv-dynamic-versioning"]
+build-backend = "hatchling.build"
