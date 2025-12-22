@@ -57,7 +57,7 @@ class MDPDatastore(BaseRegularGridDatastore):
         self._config_path = Path(config_path)
         self._root_path = self._config_path.parent
         self._config = mdp.Config.from_yaml_file(self._config_path)
-        fp_ds = self._root_path / self._config_path.name.replace(
+        fp_ds = Path(self._root_path.name.replace("config/", "data/")) / self._config_path.name.replace(
             ".yaml", ".zarr"
         )
 
