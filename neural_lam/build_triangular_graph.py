@@ -46,6 +46,12 @@ def main(input_args=None):
         help="Name to save graph as (default: multiscale)",
     )
     parser.add_argument(
+        "--save_dir",
+        type=str,
+        default=None,
+        help="Directory to save graph (default: {datastore.root_path}/graph/)",
+    )
+    parser.add_argument(
         "--plot",
         action="store_true",
         help="If graphs should be plotted during generation ",
@@ -112,7 +118,10 @@ def main(input_args=None):
     )
 
     # Set up dir for saving graph
-    save_dir_path = os.path.join(datastore.root_path, "graph", args.graph_name)
+    if args.save_dir is None:
+        save_dir_path = os.path.join(datastore.root_path, "graph", args.graph_name)
+    else:
+        save_dir_path = os.path.join(args.save_dir, args.graph_name)
     os.makedirs(save_dir_path, exist_ok=True)
 
     # Load grid positions
