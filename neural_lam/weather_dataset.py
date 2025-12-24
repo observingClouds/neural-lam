@@ -1441,6 +1441,7 @@ class WeatherDataModule(pl.LightningDataModule):
                     self.val_dataset,
                     graph_name=self.graph_names[0],
                     device=self.graph_device,
+                    graph_dir=self.graph_dir,
                 )
 
         if stage == "test" or stage is None:
@@ -1467,6 +1468,7 @@ class WeatherDataModule(pl.LightningDataModule):
                     self.test_dataset,
                     graph_name=self.graph_names[0],
                     device=self.graph_device,
+                    graph_dir=self.graph_dir,
                 )
 
     def train_dataloader(self):
