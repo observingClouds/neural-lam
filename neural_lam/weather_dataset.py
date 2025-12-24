@@ -1270,6 +1270,7 @@ class WeatherDataModule(pl.LightningDataModule):
         dynamic_time_deltas=False,
         excluded_intervals=None,
         graph_names: Union[Dict[str, str], None] = None,
+        graph_dir: str = None,
         graph_device: str = "cpu",
     ):
         super().__init__()
@@ -1403,6 +1404,7 @@ class WeatherDataModule(pl.LightningDataModule):
                             ds,
                             graph_name=graph,
                             device=self.graph_device,
+                            graph_dir=self.graph_dir,
                         )
                         for graph, ds in train_datasets.items()
                     ]
