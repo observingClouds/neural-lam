@@ -1190,6 +1190,7 @@ class WeatherDatasetWithGraph(torch.utils.data.Dataset):
         self,
         weather_dataset: WeatherDataset,
         graph_name: str,
+        graph_dir: str = None,
         device: str = "cpu",
     ):
         super().__init__()
@@ -1199,9 +1200,12 @@ class WeatherDatasetWithGraph(torch.utils.data.Dataset):
         self.datastore = weather_dataset.datastore
         self.datastore_boundary = weather_dataset.datastore_boundary
 
-        self.graph_dir_path = (
-            Path(self.datastore.root_path) / "graph" / self.graph_name
-        )
+        if graph_dir is not None:
+            self.graph_dir_path = Path(graph_dir) / self.graph_name
+        else:
+            self.graph_dir_path = (
+                Path(self.datastore.root_path) / "graph" / self.graph_name
+            )
 
         graph_edges_and_features = load_graph(
             graph_dir_path=self.graph_dir_path, datastore=self.datastore, device=self.device
