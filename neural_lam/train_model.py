@@ -3,6 +3,7 @@ import json
 import random
 import time
 from argparse import ArgumentParser
+from pathlib import Path
 
 # Third-party
 # for logging the model:
@@ -110,6 +111,12 @@ def main(input_args=None):
         nargs="+",
         default=["multiscale"],
         help="Graphs to load and use in graph-based model (default: multiscale)",
+    )
+    parser.add_argument(
+        "--graph_dir",
+        type=str,
+        default=None,
+        help="Root directory containing graph artifacts (default: <datastore.root_path>/graph)",
     )
     parser.add_argument(
         "--hidden_dim",
@@ -364,7 +371,8 @@ def main(input_args=None):
     graph_sizes = None
     graph_names = args.graph_names if issubclass(ModelClass, BaseGraphModel) else None
     if graph_names is not None:
-        graph_dir_path = datastores[0].root_path / "graph" / graph_names[0]
+        graph_root = Path(args.graph_dir) if args.graph_dir else Path(datastores[0].root_path) / "graph"
+        graph_dir_path = graph_root / graph_names[0]
         graph_features_and_edges = load_graph(graph_dir_path, datastores[0])
         graph_sizes = build_graph_sizes(graph_features_and_edges)
 
