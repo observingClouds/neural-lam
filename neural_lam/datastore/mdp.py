@@ -30,7 +30,7 @@ class MDPDatastore(BaseRegularGridDatastore):
     SHORT_NAME = "mdp"
 
     def __init__(
-        self, config_path, overload_stats_path=None, reuse_existing=True
+        self, config_path, overload_stats_path=None, reuse_existing=True, ds_path=None
     ):
         """
         Construct a new MDPDatastore from the configuration file at
@@ -52,14 +52,19 @@ class MDPDatastore(BaseRegularGridDatastore):
         reuse_existing : bool
             Whether to reuse an existing dataset zarr file if it exists and its
             creation date is newer than the configuration file.
+        ds_path : str
+            Optional, path to zarr dataset, otherwise inferred from config_path.
 
         """
         self._config_path = Path(config_path)
         self._root_path = self._config_path.parent
         self._config = mdp.Config.from_yaml_file(self._config_path)
-        fp_ds = Path(self._root_path.as_posix().replace("config","data")) / self._config_path.name.replace(
-            ".yaml", ".zarr"
-        )
+        if ds_path is not None:
+            fp_ds = Path(ds_path)
+        else:
+            fp_ds = Path(self._root_path.as_posix().replace("config","data")) / self._config_path.name.replace(
+                ".yaml", ".zarr"
+            )
 
         self._ds = None
         if reuse_existing and fp_ds.exists():
@@ -70,7 +75,10 @@ class MDPDatastore(BaseRegularGridDatastore):
                     f"The old zarr archive (in {fp_ds}) will be used."
                     "To generate new zarr-archive, move the old one first."
                 )
-            self._ds = xr.open_zarr(fp_ds, consolidated=True)
+            if fp_ds.suffix == ".zarr":
+                self._ds = xr.open_zarr(fp_ds, consolidated=True)
+            elif fp_ds.suffix == ".json":
+                self._ds = xr.open_zarr("reference://", storage_options={"fo": fp_ds.as_posix()})
 
         if self._ds is None:
             self._ds = mdp.create_dataset(config=self._config)

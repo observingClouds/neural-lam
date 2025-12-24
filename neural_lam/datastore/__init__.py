@@ -13,7 +13,7 @@ DATASTORES = {
 }
 
 
-def init_datastore(datastore_kind, config_path, overload_stats_path=None):
+def init_datastore(datastore_kind, config_path, overload_stats_path=None, ds_path=None):
     DatastoreClass = DATASTORES.get(datastore_kind)
 
     if DatastoreClass is None:
@@ -22,7 +22,7 @@ def init_datastore(datastore_kind, config_path, overload_stats_path=None):
         )
 
     datastore = DatastoreClass(
-        config_path=config_path, overload_stats_path=overload_stats_path
+        config_path=config_path, overload_stats_path=overload_stats_path, ds_path=None
     )
 
     return datastore

@@ -205,6 +205,7 @@ def load_config_and_datastores(
         datastore_kind=config.datastore.kind,
         config_path=datastore_config_path,
         overload_stats_path=overload_stats_path,
+        ds_path="/home/has/repos/mllam-exps-ShCu/index.json"
     )
 
     if config.datastore_boundary is not None:
