@@ -395,6 +395,7 @@ def main(input_args=None):
         dynamic_time_deltas=args.dynamic_time_deltas,
         excluded_intervals=configs[0].training.excluded_intervals,
         graph_names=graph_names,
+        graph_dir=args.graph_dir,
     )
 
     # Instantiate model + trainer
