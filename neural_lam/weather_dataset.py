@@ -1295,6 +1295,7 @@ class WeatherDataModule(pl.LightningDataModule):
         self.dynamic_time_deltas = dynamic_time_deltas
         self.graph_names = graph_names
         self.graph_device = graph_device
+        self.graph_dir = graph_dir
         self._collate_fn = (
             WeatherDatasetWithGraph.collate_fn
             if graph_names is not None
