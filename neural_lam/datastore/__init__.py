@@ -22,7 +22,7 @@ def init_datastore(datastore_kind, config_path, overload_stats_path=None, ds_pat
         )
 
     datastore = DatastoreClass(
-        config_path=config_path, overload_stats_path=overload_stats_path, ds_path=None
+        config_path=config_path, overload_stats_path=overload_stats_path, ds_path=ds_path
     )
 
     return datastore
