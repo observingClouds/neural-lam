@@ -205,7 +205,7 @@ def load_config_and_datastores(
         datastore_kind=config.datastore.kind,
         config_path=datastore_config_path,
         overload_stats_path=overload_stats_path,
-        ds_path="/home/has/repos/mllam-exps-ShCu/index.json"
+        ds_path=None #"/home/has/repos/mllam-exps-ShCu/index.json"
     )
 
     if config.datastore_boundary is not None:
@@ -224,7 +224,7 @@ def load_config_and_datastores(
             datastore_kind=config.datastore_boundary.kind,
             config_path=datastore_boundary_config_path,
             overload_stats_path=boundary_overload_stats_path,
-            ds_path="/home/has/repos/mllam-exps-ShCu/index.boundary.json"
+            ds_path=None #"/home/has/repos/mllam-exps-ShCu/index.boundary.json"
         )
     else:
         datastore_boundary = None
