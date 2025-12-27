@@ -359,7 +359,6 @@ def main(input_args=None):
     datastores = []
     datastores_boundary = []
     for config_path in args.config_paths:
-        import ipdb; ipdb.set_trace()
         c, ds, dsb = load_config_and_datastores(config_path)
         configs.append(c)
         datastores.append(ds)
