@@ -427,6 +427,7 @@ def main(input_args=None):
             datastore=datastores[0],
             datastore_boundary=datastores_boundary[0],
             graph_sizes=graph_sizes if graph_names is not None else None,
+            weights_only=False,
         )
     else:
         model = ModelClass(
