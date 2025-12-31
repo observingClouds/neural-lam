@@ -37,10 +37,15 @@ class DatastoreSelection:
     config_path : str
         The path to the configuration file for the selected datastore, this is
         assumed to be relative to the configuration file for neural-lam.
+    ds_path : Union[str, None]
+        Optional explicit path to the datastore (e.g. a zarr directory or
+        reference JSON). If not provided, the datastore chooses a default based
+        on its config file location.
     """
 
     kind: DatastoreKindStr
     config_path: str
+    ds_path: Union[str, None] = None
     overload_stats_path: Union[str, None] = None
 
 
@@ -201,11 +206,16 @@ def load_config_and_datastores(
         overload_stats_path = (
             Path(config_path).parent / config.datastore.overload_stats_path
         )
+
+    if config.datastore.ds_path is None:
+        datastore_ds_path = None
+    else:
+        datastore_ds_path = config.datastore.ds_path
     datastore = init_datastore(
         datastore_kind=config.datastore.kind,
         config_path=datastore_config_path,
         overload_stats_path=overload_stats_path,
-        ds_path="/home/has/repos/mllam-exps-ShCu/index.interior.json"
+        ds_path=datastore_ds_path,
     )
 
     if config.datastore_boundary is not None:
@@ -220,11 +230,16 @@ def load_config_and_datastores(
                 Path(config_path).parent
                 / config.datastore_boundary.overload_stats_path
             )
+
+        if config.datastore_boundary.ds_path is None:
+            datastore_boundary_ds_path = None
+        else:
+            datastore_boundary_ds_path = config.datastore_boundary.ds_path
         datastore_boundary = init_datastore(
             datastore_kind=config.datastore_boundary.kind,
             config_path=datastore_boundary_config_path,
             overload_stats_path=boundary_overload_stats_path,
-            ds_path="/home/has/repos/mllam-exps-ShCu/index.boundary.json"
+            ds_path=datastore_boundary_ds_path,
         )
     else:
         datastore_boundary = None
