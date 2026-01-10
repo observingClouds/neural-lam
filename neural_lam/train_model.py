@@ -504,7 +504,7 @@ def main(input_args=None):
     else:
         # Only feed fit method with checkpoint path if restore_opt
         ckpt_for_fit = args.load if args.restore_opt else None
-        trainer.fit(model=model, datamodule=data_module, ckpt_path=ckpt_for_fit)
+        trainer.fit(model=model, datamodule=data_module, ckpt_path=ckpt_for_fit, weights_only=False)
 
 
 if __name__ == "__main__":
