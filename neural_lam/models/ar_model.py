@@ -581,7 +581,7 @@ class ARModel(pl.LightningModule):
             "val_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
                 # Use the model's immediate previous state as input to the advection baseline
-        prev_state = batch['init_states'][:, 1, :, 1]  # (B, 2, num_grid_nodes, d_f)
+        #prev_state = batch['init_states'][:, 1, :, 1]  # (B, 2, num_grid_nodes, d_f)
         # val_log_dict["advection"] = metrics.advection(
         #         prediction[:,0,:,1], target[:,0,:,1], prev_state, sum_vars=False
         # ).mean()
