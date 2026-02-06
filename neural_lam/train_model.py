@@ -500,6 +500,7 @@ def main(input_args=None):
             model=model,
             datamodule=data_module,
             ckpt_path=args.load,
+            weights_only=False
         )
     else:
         # Only feed fit method with checkpoint path if restore_opt
