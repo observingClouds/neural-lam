@@ -185,7 +185,7 @@ def plot_prediction(
         fig.suptitle(title, size=20)
 
     cbar_ax = fig.add_axes([0.2, 0.05, 0.6, 0.03])
-    fig.colorbar(axes[0].collections[0], cax=cbar_ax, orientation="horizontal")
+    fig.colorbar(axes[0].collections[2], cax=cbar_ax, orientation="horizontal")
 
     return fig
 
