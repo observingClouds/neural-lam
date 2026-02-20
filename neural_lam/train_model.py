@@ -468,6 +468,7 @@ def main(input_args=None):
             save_top_k=-1,
             every_n_epochs=2,
             save_last=True,
+            save_on_train_epoch_end=True,
         )
     )
 
