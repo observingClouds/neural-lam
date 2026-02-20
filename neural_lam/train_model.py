@@ -452,7 +452,7 @@ def main(input_args=None):
         )
         run_name = path_last_ckpt.parts[-2]
         if args.eval:
-            run_name = run_name.replace("train-", "eval-")
+            run_name = run_name + "-eval"
     else:
         run_name = (
             f"{prefix}{args.model}-{args.processor_layers}x{args.hidden_dim}-"
