@@ -682,7 +682,7 @@ class ARModel(pl.LightningModule):
                 consolidated=True,
                 encoding={
                     "start_time": {
-                        "units": "Seconds since 1970-01-01 00:00:00",
+                        "units": "minutes since 2020-01-01T00:00:00Z",
                         "dtype": "int64",
                     },
                     "state": {"compressor": compressor},
