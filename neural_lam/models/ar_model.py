@@ -292,8 +292,8 @@ class ARModel(pl.LightningModule):
             "optimizer": opt,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "interval": "epoch",
-                "frequency": 1,
+                "interval": "step",
+                "frequency": 700,
             },
         }
 
