@@ -141,7 +141,7 @@ def extract_overlap(
     overlap_ind = set(existing_boundary.grid_index.values).intersection(set(prediction.grid_index.values))
     if len(overlap_ind) == 0:
         raise NoOverlapError()
-    overlap = prediction.sel(grid_index= list(overlap_ind))
+    overlap = prediction.sel(grid_index=list(overlap_ind))
     
     # The prediction has a unified 'time' coordinate (datetime values)
     # The existing_boundary might have analysis_time + elapsed_forecast_duration structure
@@ -164,19 +164,21 @@ def extract_overlap(
     forcing_overlap = overlap.rename({"state_feature": "forcing_feature"})
     forcing_overlap.name = "forcing"
     
-    # Select only the overlapping grid points from existing boundary
-    existing_overlap_points = existing_boundary_converted.sel(grid_index=list(overlap_ind))
+    # Reindex forcing_overlap to match the feature order of existing_boundary
+    forcing_overlap = forcing_overlap.reindex(
+        forcing_feature=existing_boundary_converted.coords["forcing_feature"],
+        fill_value=0.0
+    )
     
-    # Merge: forcing_overlap will override existing values at matching coordinates
-    merged = xr.merge([existing_overlap_points, forcing_overlap], compat="override", join="outer")["forcing"]
+    # Convert both to datasets for proper merging
+    ds_existing = existing_boundary_converted.to_dataset(name="forcing")
+    ds_overlap = forcing_overlap.to_dataset(name="forcing")
     
-    # Now we need to reconstruct the full boundary array
-    # Update the original boundary with the merged overlap
-    result = existing_boundary_converted.copy(deep=True)
-    for grid_idx in overlap_ind:
-        result.loc[dict(grid_index=grid_idx)] = merged.sel(grid_index=grid_idx)
+    # Merge with override: values from ds_overlap will replace values in ds_existing
+    # at matching coordinates (time, grid_index, forcing_feature)
+    ds_merged = xr.merge([ds_existing, ds_overlap], compat="override", join="outer")
     
-    return result
+    return ds_merged["forcing"]
 
 
 def build_trainer(args: argparse.Namespace) -> pl.Trainer:
