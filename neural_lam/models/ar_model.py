@@ -39,7 +39,14 @@ class ARModel(pl.LightningModule):
         datastore_boundary: Union[BaseDatastore, None],
     ):
         super().__init__()
-        self.save_hyperparameters(ignore=["datastore"])
+        # we ignore datastore objects in hyperparameters to avoid trying to
+        # serialize large or unpicklable objects, and specifically exclude the
+        # boundary datastore as well since it can change between evaluation
+        # steps (see `neural_lam.eval_multi_domain` which cycles through
+        # different domains using the same model).  Logging a changing
+        # parameter leads to an MlflowException about changing parameter
+        # values, so we preemptively ignore it here.
+        self.save_hyperparameters(ignore=["datastore", "datastore_boundary"])
         self.args = args
         self._datastore = datastore
         num_state_vars = datastore.get_num_data_vars(category="state")

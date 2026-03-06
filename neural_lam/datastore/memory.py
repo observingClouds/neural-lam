@@ -33,7 +33,7 @@ class ArrayDatastore(BaseDatastore):
     """
 
     def __init__(self, arr: xr.DataArray, reference: BaseDatastore):
-        self._arr = arr.copy()
+        self._ds = arr.copy()
         self._reference = reference
 
     @property
@@ -43,10 +43,10 @@ class ArrayDatastore(BaseDatastore):
 
     @property
     def num_grid_points(self) -> int:
-        """Number of spatial grid points contained in ``self._arr``."""
+        """Number of spatial grid points contained in ``self._ds``."""
         # assume a dimension called 'grid_index' is present
-        if "grid_index" in self._arr.dims:
-            return int(self._arr.sizes["grid_index"])
+        if "grid_index" in self._ds.dims:
+            return int(self._ds.sizes["grid_index"])
         # fall back to reference datastore if unknown
         return self._reference.num_grid_points
 
@@ -77,7 +77,7 @@ class ArrayDatastore(BaseDatastore):
 
     def get_num_data_vars(self, category: str) -> int:
         if category == "forcing":
-            return int(self._arr.sizes.get("forcing_feature", 0))
+            return int(self._ds.sizes.get("forcing_feature", 0))
         # ask reference for static
         if category == "static":
             return self._reference.get_num_data_vars(category)
@@ -91,17 +91,19 @@ class ArrayDatastore(BaseDatastore):
     def get_dataarray(
         self, category: str, split: str, standardize: bool = False
     ) -> Union[xr.DataArray, None]:
-        if category == "forcing":
-            da = self._arr
+        if category == "forcing" or category == "state":
+            da = self._ds
             if standardize:
-                stats = self.get_standardization_dataarray(category="forcing")
+                stats = self.get_standardization_dataarray(category=category)
                 mean = stats.forcing_mean
                 std = stats.forcing_std
                 da = (da - mean) / std
             return da
-        if category == "static":
+        elif category == "static":
             # just proxy the reference static array (should be small)
             return self._reference.get_dataarray(category, split, standardize)
+        else:
+            raise ValueError(f"Unknown category: {category}")
         return None
 
     def get_xy(self, category: str) -> Any:

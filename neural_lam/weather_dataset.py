@@ -1082,6 +1082,62 @@ class WeatherDataset(torch.utils.data.Dataset):
         return da
 
 
+class SubsetWeatherDataset(WeatherDataset):
+    """
+    Subclass of :class:`WeatherDataset` that restricts samples to a provided
+    list of times.  The subset is specified at initialization and only the
+    corresponding indices are returned by ``__len__`` and ``__getitem__``.
+
+    Parameters
+    ----------
+    *args, **kwargs
+        Passed through to the :class:`WeatherDataset` constructor.
+    subset_times : Iterable[Union[str, numpy.datetime64, datetime.datetime]]
+        Sequence of times to keep in the dataset.  Times are compared against
+        the ``time`` coordinate of ``da_state`` after the base dataset has
+        been created.  Any requested time not present in the underlying
+        array is silently ignored.
+    """
+
+    def __init__(self, *args, subset_times=None, **kwargs):
+        # create placeholder so base __len__ can run safely
+        self.valid_indices = None
+        super().__init__(*args, **kwargs)
+
+        if subset_times is None:
+            # behave like normal dataset
+            self.valid_indices = list(range(super().__len__()))
+            return
+
+        # compute the subset indices now that da_state is available
+        all_times = self.da_state.time.values
+        times_np = np.array(subset_times, dtype="datetime64[ns]")
+        idxs = np.searchsorted(all_times, times_np)
+        self.valid_indices = []
+        import ipdb; ipdb.set_trace()
+        for t, idx in zip(times_np, idxs):
+            if idx < len(all_times) and all_times[idx] == t:
+                self.valid_indices.append(int(idx))
+
+        if len(self.valid_indices) == 0:
+            raise ValueError(
+                "SubsetWeatherDataset received no valid times; check ``subset_times``"
+            )
+
+    def __len__(self):
+        # if subset hasn't been computed yet, fall back to parent length
+        if self.valid_indices is None:
+            return super().__len__()
+        return len(self.valid_indices)
+
+    def __getitem__(self, idx):
+        # map subset index back to original dataset index
+        if self.valid_indices is None:
+            return super().__getitem__(idx)
+        orig_idx = self.valid_indices[idx]
+        return super().__getitem__(orig_idx)
+
+
 class EvalSubsetWrapper(torch.utils.data.Dataset):
     """
     A PyTorch Dataset wrapper that selects only samples with specific
@@ -1093,47 +1149,49 @@ class EvalSubsetWrapper(torch.utils.data.Dataset):
     """
 
     def __init__(self, dataset, eval_init_times):
-        self.dataset = dataset
+        self.datastore = dataset
         self.eval_init_times = eval_init_times
 
+        import ipdb; ipdb.set_trace()
+
         # TODO generalize class beyond 00/12 UTC
-        assert self.eval_init_times == [
-            0,
-            12,
-        ], "Only eval_init_times 00, 12 implemented"
-        valid_init_diff = 12
+        # assert self.eval_init_times == [
+        #     0,
+        #     12,
+        # ], "Only eval_init_times 00, 12 implemented"
+        # valid_init_diff = 12
 
-        # Figure out which indices to use
-        first_batch = dataset[0]
-        first_init_time = self.get_utc_init_of_batch(first_batch)
+        # # Figure out which indices to use
+        # first_batch = dataset[0]
+        # first_init_time = self.get_utc_init_of_batch(first_batch)
 
-        # Note that we have to consider orig_time_step-state, as that is the
-        # time difference between init times in self.dataset
-        time_step_state_hour = self.dataset.orig_time_step_state.astype(
-            "timedelta64[h]"
-        ).astype(int)
-        assert (
-            valid_init_diff % time_step_state_hour == 0
-        ), "Invalid time step for eval_init_times"
+        # # Note that we have to consider orig_time_step-state, as that is the
+        # # time difference between init times in self.dataset
+        # time_step_state_hour = self.dataset.orig_time_step_state.astype(
+        #     "timedelta64[h]"
+        # ).astype(int)
+        # assert (
+        #     valid_init_diff % time_step_state_hour == 0
+        # ), "Invalid time step for eval_init_times"
 
         # Find how many indices to skip in each step
-        self.valid_idx_interval = valid_init_diff // time_step_state_hour
+        self.valid_idx_interval = 100 #valid_init_diff // time_step_state_hour
 
-        # Find first valid index
-        first_valid_idx = None
-        for idx, step_offset in enumerate(range(0, 24, time_step_state_hour)):
-            # Init time in h UTC
-            potential_init_time = (first_init_time + step_offset) % 24
-            if potential_init_time in eval_init_times:
-                first_valid_idx = idx
-                break
+        # # Find first valid index
+        # first_valid_idx = None
+        # for idx, step_offset in enumerate(range(0, 24, time_step_state_hour)):
+        #     # Init time in h UTC
+        #     potential_init_time = (first_init_time + step_offset) % 24
+        #     if potential_init_time in eval_init_times:
+        #         first_valid_idx = idx
+        #         break
 
-        assert first_valid_idx is not None, "Found no valid init time"
-        self.first_valid_idx = first_valid_idx
+        # assert first_valid_idx is not None, "Found no valid init time"
+        self.first_valid_idx = 0
 
     def get_utc_init_of_batch(self, batch):
         """Get init time for batch in UTC, as int"""
-        target_times_np = batch[-1].numpy().astype("datetime64[ns]")
+        target_times_np = batch["batch_times"].numpy().astype("datetime64[ns]")
         init_time = target_times_np[0] - self.dataset.orig_time_step_state
         init_time_hour = init_time.astype("datetime64[h]").astype(int) % 24
         return init_time_hour
@@ -1276,6 +1334,7 @@ class WeatherDataModule(pl.LightningDataModule):
         graph_names: Union[Dict[str, str], None] = None,
         graph_dir: str = None,
         graph_device: str = "cpu",
+        subset_times=None,
     ):
         super().__init__()
         self._datastores = {k: v for k, v in zip (graph_names, datastores)} if graph_names else {None: datastores[0]}
@@ -1300,6 +1359,7 @@ class WeatherDataModule(pl.LightningDataModule):
         self.graph_names = graph_names
         self.graph_device = graph_device
         self.graph_dir = graph_dir
+        self.subset_times = subset_times
         self._collate_fn = (
             WeatherDatasetWithGraph.collate_fn
             if graph_names is not None
@@ -1330,7 +1390,8 @@ class WeatherDataModule(pl.LightningDataModule):
             self.excluded_intervals = []
 
     def make_training_dataset(self, time_slice, graph_name=None):
-        return WeatherDataset(
+        base_class = SubsetWeatherDataset if self.subset_times is not None else WeatherDataset
+        return base_class(
             datastore=self._datastores[graph_name],
             datastore_boundary=self._datastores_boundary[graph_name],
             split="train",
@@ -1344,9 +1405,11 @@ class WeatherDataModule(pl.LightningDataModule):
             boundary_subsample_step=self.boundary_subsample_step,
             dynamic_time_deltas=self.dynamic_time_deltas,
             time_slice=time_slice,
+            subset_times=self.subset_times,
         )
 
     def setup(self, stage=None):
+        import ipdb; ipdb.set_trace()
         if stage == "fit" or stage is None:
             if self.excluded_intervals:
                 raise NotImplementedError(
@@ -1417,20 +1480,22 @@ class WeatherDataModule(pl.LightningDataModule):
                     train_datasets = list(train_datasets.values())
                 self.train_dataset = torch.utils.data.ConcatDataset(train_datasets)
 
-            self.val_dataset = WeatherDataset(
-                datastore=list(self._datastores.values())[0],
-                datastore_boundary=list(self._datastores_boundary.values())[0],
-                split="val",
-                ar_steps=self.ar_steps_eval,
-                standardize=self.standardize,
-                num_past_forcing_steps=self.num_past_forcing_steps,
-                num_future_forcing_steps=self.num_future_forcing_steps,
-                num_past_boundary_steps=self.num_past_boundary_steps,
-                num_future_boundary_steps=self.num_future_boundary_steps,
-                interior_subsample_step=self.interior_subsample_step,
-                boundary_subsample_step=self.boundary_subsample_step,
-                dynamic_time_deltas=self.dynamic_time_deltas,
-            )
+                base_class = SubsetWeatherDataset if self.subset_times is not None else WeatherDataset
+                self.val_dataset = base_class(
+                    datastore=list(self._datastores.values())[0],
+                    datastore_boundary=list(self._datastores_boundary.values())[0],
+                    split="val",
+                    ar_steps=self.ar_steps_eval,
+                    standardize=self.standardize,
+                    num_past_forcing_steps=self.num_past_forcing_steps,
+                    num_future_forcing_steps=self.num_future_forcing_steps,
+                    num_past_boundary_steps=self.num_past_boundary_steps,
+                    num_future_boundary_steps=self.num_future_boundary_steps,
+                    interior_subsample_step=self.interior_subsample_step,
+                    boundary_subsample_step=self.boundary_subsample_step,
+                    dynamic_time_deltas=self.dynamic_time_deltas,
+                    subset_times=self.subset_times,
+                )
 
             if self.eval_init_times:
                 self.val_dataset = EvalSubsetWrapper(
@@ -1444,8 +1509,9 @@ class WeatherDataModule(pl.LightningDataModule):
                     graph_dir=self.graph_dir,
                 )
 
-        if stage == "test" or stage is None:
-            self.test_dataset = WeatherDataset(
+        if (stage == "test" or stage is None) and self.test_dataset is None:
+            base_class = SubsetWeatherDataset if self.subset_times is not None else WeatherDataset
+            self.test_dataset = base_class(
                 datastore=list(self._datastores.values())[0],
                 datastore_boundary=list(self._datastores_boundary.values())[0],
                 split=self.eval_split,
@@ -1458,6 +1524,7 @@ class WeatherDataModule(pl.LightningDataModule):
                 interior_subsample_step=self.interior_subsample_step,
                 boundary_subsample_step=self.boundary_subsample_step,
                 dynamic_time_deltas=self.dynamic_time_deltas,
+                subset_times=self.subset_times,
             )
             if self.eval_init_times:
                 self.test_dataset = EvalSubsetWrapper(

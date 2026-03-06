@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import datetime as dt
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -55,6 +56,12 @@ MODELS = {
     "hi_lam_parallel": HiLAMParallel,
 }
 
+class NoOverlapError(ValueError):
+    """Raised when there is no overlap between the model prediction and the
+    existing boundary array, so that a new boundary forcing cannot be extracted.
+    """
+    pass
+
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -72,7 +79,7 @@ def load_adjacency(path: Optional[str], n_domains: int) -> Dict[int, List[int]]:
     If ``path`` is None we assume a linear chain (i<i+1).
     """
     if path is None:
-        return {i: [i - 1, i + 1] for i in range(n_domains)}
+        return {0: [1], 1:[0]} #{i: [i - 1, i + 1] for i in range(n_domains)}
     with open(path) as f:
         data = yaml.safe_load(f)
     # allow json as well
@@ -131,18 +138,45 @@ def extract_overlap(
     # attempt to select the overlap using the grid_index values of the
     # existing boundary; this covers the common case where the boundary array
     # already contains exactly the cells we care about
-    try:
-        overlap = prediction.sel(grid_index=existing_boundary.grid_index)
-    except Exception:
-        # if the selection fails (e.g. different coordinate name) just use the
-        # full prediction; the merge below will still function correctly but
-        # could be wasteful
-        overlap = prediction
-
-    # merge the old and new arrays, giving precedence to the freshly
-    # computed overlap (compat="override" behaves like ds_merged above)
-    merged = xr.merge([existing_boundary, overlap], compat="override")
-    return merged
+    overlap_ind = set(existing_boundary.grid_index.values).intersection(set(prediction.grid_index.values))
+    if len(overlap_ind) == 0:
+        raise NoOverlapError()
+    overlap = prediction.sel(grid_index= list(overlap_ind))
+    
+    # The prediction has a unified 'time' coordinate (datetime values)
+    # The existing_boundary might have analysis_time + elapsed_forecast_duration structure
+    # We need to ensure compatible time handling
+    
+    # Check if existing_boundary has the forecast dimension structure
+    if "analysis_time" in existing_boundary.dims and "elapsed_forecast_duration" in existing_boundary.dims:
+        # Convert existing_boundary to have unified time coordinate like prediction
+        existing_boundary_converted = existing_boundary.stack(time=("analysis_time", "elapsed_forecast_duration"))
+        time_values = (existing_boundary_converted.coords["analysis_time"].values + 
+                      existing_boundary_converted.coords["elapsed_forecast_duration"].values)
+        existing_boundary_converted = (existing_boundary_converted
+                                       .drop_vars(["time", "analysis_time", "elapsed_forecast_duration"], errors="ignore")
+                                       .assign_coords(time=time_values))
+    else:
+        existing_boundary_converted = existing_boundary
+    
+    # Now both have compatible time coordinates - merge them
+    # Rename state_feature to forcing_feature in the overlap
+    forcing_overlap = overlap.rename({"state_feature": "forcing_feature"})
+    forcing_overlap.name = "forcing"
+    
+    # Select only the overlapping grid points from existing boundary
+    existing_overlap_points = existing_boundary_converted.sel(grid_index=list(overlap_ind))
+    
+    # Merge: forcing_overlap will override existing values at matching coordinates
+    merged = xr.merge([existing_overlap_points, forcing_overlap], compat="override", join="outer")["forcing"]
+    
+    # Now we need to reconstruct the full boundary array
+    # Update the original boundary with the merged overlap
+    result = existing_boundary_converted.copy(deep=True)
+    for grid_idx in overlap_ind:
+        result.loc[dict(grid_index=grid_idx)] = merged.sel(grid_index=grid_idx)
+    
+    return result
 
 
 def build_trainer(args: argparse.Namespace) -> pl.Trainer:
@@ -505,18 +539,6 @@ def main(input_args=None):
         graph_features_and_edges = load_graph(graph_dir_path, domain_triples[0][1])
         graph_sizes = build_graph_sizes(graph_features_and_edges)
 
-    model_cls = ModelClass
-    model = model_cls.load_from_checkpoint(
-        args.checkpoint,
-        args=args,
-        config=domain_triples[0][0],
-        datastore=domain_triples[0][1],
-        datastore_boundary=domain_triples[0][2],
-        graph_sizes=graph_sizes if graph_names is not None else None,
-        weights_only=False,
-    )
-
-    trainer = build_trainer(args)
 
     # prepare initial boundary forcings
     current_boundaries: List[Optional[xr.DataArray]] = []
@@ -537,20 +559,40 @@ def main(input_args=None):
     out_base = Path(args.output_dir)
     out_base.mkdir(parents=True, exist_ok=True)
 
-    for step in range(args.steps):
+    times = [dt.datetime(2020, 2, 12, 0, 20) + dt.timedelta(minutes=10*i) for i in range(args.steps)]
+
+    for s, step in enumerate(range(args.steps)):
         predictions[step] = {}
-        for i, (cfg, ds, _) in enumerate(domain_triples):
-            ds._ds.splits[2,1] = "2020-02-12T00:30"
+        for i, (cfg, ds, dsb) in enumerate(domain_triples):
+            model_cls = ModelClass
+            model = model_cls.load_from_checkpoint(
+                args.checkpoint,
+                args=args,
+                config=cfg,
+                datastore=ds,
+                datastore_boundary=dsb,
+                graph_sizes=graph_sizes if graph_names is not None else None,
+                weights_only=False,
+            )
+
+            trainer = build_trainer(args)
+
+            ds._ds.splits[2,1] = "2020-02-12T01:40"
             boundary_arr = current_boundaries[i]
             boundary_ds = (
                 ArrayDatastore(boundary_arr, reference=reference_stores[i])
                 if boundary_arr is not None
                 else None
             )
+            if step == 0:
+                interior_ds = ds
+            else:
+                import ipdb; ipdb.set_trace()
+                ds._ds['state'] = xr.merge([ds._ds['state'], predictions[step - 1][i]], compat="override", join="outer")['state']
+                interior_ds = ds
 
-            import ipdb; ipdb.set_trace()
             dm = WeatherDataModule(
-                datastores=[ds],
+                datastores=[interior_ds],
                 datastores_boundary=[boundary_ds],
                 ar_steps_train=1,  # irrelevant
                 ar_steps_eval=args.ar_steps_eval,
@@ -562,13 +604,15 @@ def main(input_args=None):
                 batch_size=args.batch_size,
                 num_workers=args.num_workers,
                 eval_split="val",
-                eval_init_times=args.eval_init_times or None,
+                # eval_init_times=1,
                 dynamic_time_deltas=False,
                 excluded_intervals=cfg.training.excluded_intervals,
                 graph_names=graph_names,
                 graph_dir=args.graph_dir,
+                subset_times=[times[s]],
             )
-            dm.setup(stage="test")
+            # import ipdb; ipdb.set_trace()
+            # dm.setup(stage="test")
 
             # destination path for this domain/step
             out_path = out_base / f"domain{i}" / f"step{step}.zarr"
@@ -577,31 +621,31 @@ def main(input_args=None):
             # make sure the model writes to the correct file
             model.args.save_eval_to_zarr_path = str(out_path)
             # optionally restrict the datamodule to a single init time
-            if args.init_time is not None:
-                # parse the provided string once
-                target_dt = np.datetime64(args.init_time)
+            # if args.init_time is not None:
+            #     # parse the provided string once
+            #     target_dt = np.datetime64(args.init_time)
 
-                class SingleInitWrapper(torch.utils.data.Dataset):
-                    def __init__(self, ds, target_dt):
-                        self.ds = ds
-                        self.target = target_dt
-                        self.idx = None
-                        ind = np.argwhere(ds.weather_dataset.da_state.time.values == target_dt)[0]
-                        if len(ind) == 0:
-                            raise ValueError(f"no sample with init time {target_dt}")
-                        else:
-                            self.idx = ind[0].item() - 2
-                        # assert ds[self.idx]["batch_times"].numpy().astype("datetime64[ns]") == target_dt, (
-                        #     f"expected init time {target_dt} but found {ds[self.idx]['batch_times'].numpy().astype('datetime64[ns]')}"
-                        # )
+            #     class SingleInitWrapper(torch.utils.data.Dataset):
+            #         def __init__(self, ds, target_dt):
+            #             self.ds = ds
+            #             self.target = target_dt
+            #             self.idx = None
+            #             ind = np.argwhere(ds.weather_dataset.da_state.time.values == target_dt)
+            #             if len(ind) == 0:
+            #                 raise ValueError(f"no sample with init time {target_dt}")
+            #             else:
+            #                 self.idx = ind[0][0].item() - 2
+            #             # assert ds[self.idx]["batch_times"].numpy().astype("datetime64[ns]") == target_dt, (
+            #             #     f"expected init time {target_dt} but found {ds[self.idx]['batch_times'].numpy().astype('datetime64[ns]')}"
+            #             # )
 
-                    def __len__(self):
-                        return 1
+            #         def __len__(self):
+            #             return 1
 
-                    def __getitem__(self, ii):
-                        return self.ds[self.idx]
+            #         def __getitem__(self, ii):
+            #             return self.ds[self.idx]
 
-                dm.test_dataset = SingleInitWrapper(dm.test_dataset, target_dt)
+            #     dm.test_dataset = SingleInitWrapper(dm.test_dataset, target_dt)
 
             trainer.test(
                 model=model,
@@ -612,19 +656,32 @@ def main(input_args=None):
             )
 
             # read zarr back into memory for boundary extraction
-            pred_arr = xr.open_zarr(out_path)
+            pred_arr = xr.open_zarr(out_path).isel(start_time=slice(-1,None)) # TODO: this should anyway just be a single forecast
+            pred_arr = pred_arr["state"].stack(time=("start_time","elapsed_forecast_duration"))
+            time_1d = pred_arr["start_time"].values + pred_arr["elapsed_forecast_duration"].values
+            pred_arr = pred_arr.drop_vars(['time', 'start_time', 'elapsed_forecast_duration']).assign_coords(time=time_1d)
             predictions[step][i] = pred_arr
 
         # update boundary arrays for next iteration
         for i in range(n_domains):
             for j in adjacency.get(i, []):
                 predictions_i = predictions[step][i]
-                current_boundaries[j] = extract_overlap(
-                    predictions_i,
-                    current_boundaries[j],
-                    source_idx=i,
-                    target_idx=j,
-                )
+                try:
+                    update = extract_overlap(
+                        predictions_i,
+                        current_boundaries[j],
+                    )
+                    current_boundaries[j] = update
+                    # # Convert update dimensions from (start_time, elapsed_forecast_time) to (time,)
+                    # times = update.coords["start_time"] + update.coords["elapsed_forecast_time"]
+                    # update = update.assign_coords(time=times).drop_vars(["start_time", "elapsed_forecast_time"])
+                    # current_boundaries[j] = xr.merge([current_boundaries[j], update],
+
+                except NoOverlapError:
+                    print(
+                        f"Warning: no overlap between prediction for domain {i} and existing boundary for domain {j}. "
+                        "Skipping boundary update for this pair. Check that the adjacency mapping is correct."
+                    )
 
     # optionally the full `predictions` dict can be saved/pickled here
     # but we leave that to caller
