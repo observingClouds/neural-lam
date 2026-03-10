@@ -49,6 +49,7 @@ from .datastore.memory import ArrayDatastore
 from .models import GraphLAM, HiLAM, HiLAMParallel
 from .models.base_graph_model import BaseGraphModel
 from .weather_dataset import WeatherDataModule
+from .graph_data import load_graph, build_graph_sizes
 
 MODELS = {
     "graph_lam": GraphLAM,
@@ -79,7 +80,7 @@ def load_adjacency(path: Optional[str], n_domains: int) -> Dict[int, List[int]]:
     If ``path`` is None we assume a linear chain (i<i+1).
     """
     if path is None:
-        return {0: [1], 1:[0]} #{i: [i - 1, i + 1] for i in range(n_domains)}
+        return {0: [1], 1:[0, 2], 2:[1], 3:[2]} #{i: [i - 1, i + 1] for i in range(n_domains)}
     with open(path) as f:
         data = yaml.safe_load(f)
     # allow json as well
@@ -176,9 +177,16 @@ def extract_overlap(
     
     # Merge with override: values from ds_overlap will replace values in ds_existing
     # at matching coordinates (time, grid_index, forcing_feature)
-    ds_merged = xr.merge([ds_existing, ds_overlap], compat="override", join="outer")
+    ds_overlap = ds_overlap.transpose('time', 'grid_index', 'forcing_feature')
+
+    updated_grid_cell_ind = np.where(np.isin(existing_boundary_converted.grid_index.values, overlap.grid_index.values))[0]
+    update_timeslice = ds_existing.sel(time=overlap.coords["time"].values)
+    update_timeslice.forcing.data[:, updated_grid_cell_ind, :] = ds_overlap.forcing.data[:, :, :]
+
+    time_index = np.where(np.isin(existing_boundary_converted.coords["time"].values, overlap.coords["time"].values))[0]
+    ds_existing.forcing.data[time_index, :, :] = update_timeslice.forcing.data
     
-    return ds_merged["forcing"]
+    return ds_existing["forcing"]
 
 
 def build_trainer(args: argparse.Namespace) -> pl.Trainer:
@@ -532,15 +540,14 @@ def main(input_args=None):
     ModelClass = MODELS[args.model]
     graph_names = args.graph_names if issubclass(ModelClass, BaseGraphModel) else None
     graph_sizes = None
+    graphs = {}
     if graph_names is not None:
-        graph_root = Path(args.graph_dir) if args.graph_dir else Path(domain_triples[0][1].root_path) / "graph"
-        graph_dir_path = graph_root / graph_names[0]
-        from .graph_data import load_graph, build_graph_sizes
-
-        # use first datastore to load graph metadata
-        graph_features_and_edges = load_graph(graph_dir_path, domain_triples[0][1])
-        graph_sizes = build_graph_sizes(graph_features_and_edges)
-
+        for d, dom in enumerate(domain_triples):
+            graph_root = Path(args.graph_dir) if args.graph_dir else Path(dom[1].root_path) / "graph"
+            graph_dir_path = graph_root / graph_names[d]
+            graph_features_and_edges = load_graph(graph_dir_path, dom[1])
+            graph_sizes = build_graph_sizes(graph_features_and_edges)
+            graphs[d] = {"graph_sizes": graph_sizes}
 
     # prepare initial boundary forcings
     current_boundaries: List[Optional[xr.DataArray]] = []
@@ -573,13 +580,13 @@ def main(input_args=None):
                 config=cfg,
                 datastore=ds,
                 datastore_boundary=dsb,
-                graph_sizes=graph_sizes if graph_names is not None else None,
+                graph_sizes=graphs[i]['graph_sizes'] if graph_names is not None else None,
                 weights_only=False,
             )
 
             trainer = build_trainer(args)
 
-            ds._ds.splits[2,1] = "2020-02-12T01:40"
+            # ds._ds.splits[2,1] = "2020-02-12T01:40"
             boundary_arr = current_boundaries[i]
             boundary_ds = (
                 ArrayDatastore(boundary_arr, reference=reference_stores[i])
@@ -589,8 +596,10 @@ def main(input_args=None):
             if step == 0:
                 interior_ds = ds
             else:
-                import ipdb; ipdb.set_trace()
-                ds._ds['state'] = xr.merge([ds._ds['state'], predictions[step - 1][i]], compat="override", join="outer")['state']
+                pred_time = predictions[step - 1][i].coords["time"].values
+                ds_time_idx = np.argwhere(ds._ds['state'].coords["time"].values == pred_time)[0][0].item()
+                pred_trans = predictions[step - 1][i].transpose('state_feature','time','grid_index')
+                ds._ds['state'].data[:, [ds_time_idx], :] = pred_trans.data
                 interior_ds = ds
 
             dm = WeatherDataModule(
@@ -609,7 +618,7 @@ def main(input_args=None):
                 # eval_init_times=1,
                 dynamic_time_deltas=False,
                 excluded_intervals=cfg.training.excluded_intervals,
-                graph_names=graph_names,
+                graph_names=[graph_names[d] if graph_names is not None else None],
                 graph_dir=args.graph_dir,
                 subset_times=[times[s]],
             )

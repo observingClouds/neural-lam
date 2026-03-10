@@ -1114,7 +1114,6 @@ class SubsetWeatherDataset(WeatherDataset):
         times_np = np.array(subset_times, dtype="datetime64[ns]")
         idxs = np.searchsorted(all_times, times_np)
         self.valid_indices = []
-        import ipdb; ipdb.set_trace()
         for t, idx in zip(times_np, idxs):
             if idx < len(all_times) and all_times[idx] == t:
                 self.valid_indices.append(int(idx))
@@ -1151,8 +1150,6 @@ class EvalSubsetWrapper(torch.utils.data.Dataset):
     def __init__(self, dataset, eval_init_times):
         self.datastore = dataset
         self.eval_init_times = eval_init_times
-
-        import ipdb; ipdb.set_trace()
 
         # TODO generalize class beyond 00/12 UTC
         # assert self.eval_init_times == [
@@ -1409,7 +1406,6 @@ class WeatherDataModule(pl.LightningDataModule):
         )
 
     def setup(self, stage=None):
-        import ipdb; ipdb.set_trace()
         if stage == "fit" or stage is None:
             if self.excluded_intervals:
                 raise NotImplementedError(
