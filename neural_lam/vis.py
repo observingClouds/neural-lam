@@ -81,7 +81,7 @@ def plot_on_axis(
     vmin=None,
     vmax=None,
     ax_title=None,
-    cmap="plasma",
+    cmap="RdBu_r",
 ):
     """
     Plot weather state on given axis
@@ -179,7 +179,7 @@ def plot_prediction(
     for ax, da, subtitle in zip(
         axes, (da_target, da_prediction), ("Ground Truth", "Prediction")
     ):
-        plot_on_axis(ax, da, datastore, vmin, vmax, subtitle, cmap="viridis")
+        plot_on_axis(ax, da, datastore, vmin, vmax, subtitle, cmap="RdBu_r")
 
     if title:
         fig.suptitle(title, size=20)
