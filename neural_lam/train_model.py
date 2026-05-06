@@ -160,6 +160,13 @@ def main(input_args=None):
         "(default: False (no))",
     )
     parser.add_argument(
+        "--num_quantiles",
+        type=int,
+        default=0,
+        help="Number of quantiles to predict per output dimension. "
+        "If >0, models will output these quantiles. (default: 0)",
+    )
+    parser.add_argument(
         "--shared_grid_embedder",
         action="store_true",  # Default to separate embedders
         help="If the same embedder MLP should be used for interior and boundary"

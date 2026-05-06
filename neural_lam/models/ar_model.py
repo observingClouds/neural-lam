@@ -94,9 +94,13 @@ class ARModel(pl.LightningModule):
 
         # Double grid output dim. to also output std.-dev.
         self.output_std = bool(args.output_std)
+        self.num_quantiles = int(args.num_quantiles)
         if self.output_std:
             # Pred. dim. in grid cell
             self.grid_output_dim = 2 * num_state_vars
+        elif self.num_quantiles > 0:
+            # Pred. dim. in grid cell
+            self.grid_output_dim = self.num_quantiles * num_state_vars
         else:
             # Pred. dim. in grid cell
             self.grid_output_dim = num_state_vars
@@ -456,8 +460,10 @@ class ARModel(pl.LightningModule):
         prediction, pred_std = self.unroll_prediction(
             init_states, forcing, boundary_forcing
         )  # (B, pred_steps, num_interior_nodes, d_f)
-        # prediction: (B, pred_steps, num_interior_nodes, d_f) pred_std: (B,
-        # pred_steps, num_interior_nodes, d_f) or (d_f,)
+        # prediction: (B, pred_steps, num_interior_nodes, d_f)
+        # pred_std: (B, pred_steps, num_interior_nodes, d_f) OR
+        #           (B, pred_steps, num_interior_nodes, d_f, n_quantiles) OR
+        #           (d_f,)
 
         return prediction, target_states, pred_std, batch_times
 

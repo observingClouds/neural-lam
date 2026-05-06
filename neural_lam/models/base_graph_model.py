@@ -523,6 +523,26 @@ class BaseGraphModel(ARModel):
             # linter for some reason does not think softplus is callable
             # pylint: disable-next=not-callable
             pred_std = torch.nn.functional.softplus(pred_std_raw)
+        elif self.num_quantiles > 0:
+            # Net output is (B, num_interior_nodes, num_quantiles * d_f)
+            # Treat the net_output as (B, num_interior_nodes, d_f, n_q)
+            pred_quantiles = net_output.view(
+                batch_size, -1, self.num_quantiles
+            )  # (B*N, d_f, n_q)
+            pred_quantiles = pred_quantiles.view(
+                batch_size, -1, pred_quantiles.shape[1], self.num_quantiles
+            )  # (B, N, d_f, n_q)
+
+            # Use median as point prediction
+            mid_idx = self.num_quantiles // 2
+            if self.num_quantiles % 2 == 1:
+                pred_delta_mean = pred_quantiles[:, :, :, mid_idx]
+            else:
+                pred_delta_mean = (
+                    pred_quantiles[:, :, :, mid_idx - 1]
+                    + pred_quantiles[:, :, :, mid_idx]
+                ) / 2
+            pred_std = pred_quantiles  # (B, N, d_f, n_q)
         else:
             pred_delta_mean = net_output
             pred_std = None

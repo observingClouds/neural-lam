@@ -243,6 +243,52 @@ def crps_gauss(
     )
 
 
+def crps_quantile(
+    pred, target, pred_quantiles, mask=None, average_grid=True, sum_vars=True
+):
+    """
+    Quantile-based CRPS (Mean Pinball Loss)
+
+    (...,) is any number of batch dimensions, potentially different
+            but broadcastable
+    pred: (..., N, d_state), prediction (mean, ignored for this metric)
+    target: (..., N, d_state), target
+    pred_quantiles: (..., N, d_state, n_quantiles), predicted quantiles
+    mask: (N,), boolean mask describing which grid nodes to use in metric
+    average_grid: boolean, if grid dimension -2 should be reduced (mean over N)
+    sum_vars: boolean, if variable dimension -1 should be reduced (sum
+        over d_state)
+
+    Returns:
+    metric_val: One of (...,), (..., d_state), (..., N), (..., N, d_state),
+    depending on reduction arguments.
+    """
+    n_quantiles = pred_quantiles.shape[-1]
+    # equally spaced quantiles: 1/(n+1), 2/(n+1), ..., n/(n+1)
+    quantiles = torch.linspace(
+        1 / (n_quantiles + 1),
+        n_quantiles / (n_quantiles + 1),
+        n_quantiles,
+        device=pred.device,
+    )
+
+    # pred_quantiles: (..., N, d_state, n_quantiles)
+    # target: (..., N, d_state) -> (..., N, d_state, 1)
+    errors = target.unsqueeze(-1) - pred_quantiles
+    pinball_loss = torch.max(
+        quantiles * errors, (quantiles - 1) * errors
+    )  # (..., N, d_state, n_quantiles)
+
+    # Average over quantiles
+    entry_crps = 2 * torch.mean(
+        pinball_loss, dim=-1
+    )  # (..., N, d_state). Factor 2 for scaling
+
+    return mask_and_reduce_metric(
+        entry_crps, mask=mask, average_grid=average_grid, sum_vars=sum_vars
+    )
+
+
 DEFINED_METRICS = {
     "mse": mse,
     "mae": mae,
@@ -250,4 +296,5 @@ DEFINED_METRICS = {
     "wmae": wmae,
     "nll": nll,
     "crps_gauss": crps_gauss,
+    "crps_quantile": crps_quantile,
 }
