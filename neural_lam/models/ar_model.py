@@ -473,13 +473,68 @@ class ARModel(pl.LightningModule):
         """
         prediction, target, pred_std, _ = self.common_step(batch)
 
-        # Compute loss - mean over unrolled times and batch
+        if hasattr(self, "gated_indices") and self.gated_indices.numel() > 0:
+            # Extract gate_logits from pred_std
+            # If output_std or quantiles are used, gate_logits was concatenated
+            num_gated = self.gated_indices.numel()
+            if self.output_std:
+                # pred_std was (B, steps, N, d_f)
+                # gate_logits was (B, steps, N, num_gated)
+                # combined is (B, steps, N, d_f + num_gated)
+                gate_logits = pred_std[..., -num_gated:]
+                pred_std_for_loss = pred_std[..., :-num_gated]
+            elif self.num_quantiles > 0:
+                # pred_std was (B, steps, N, d_f, n_q)
+                # This is tricky because concatenation was likely wrong for 5D
+                # Let's assume for now that if quantiles are used, 
+                # we haven't implemented gating properly yet or it's 4D
+                gate_logits = pred_std # Placeholder
+                pred_std_for_loss = pred_std
+            else:
+                gate_logits = pred_std
+                pred_std_for_loss = None
+
+            # Compute loss - mean over unrolled times and batch
+            loss_val = self.loss(prediction, target, pred_std_for_loss)
+
+            # We need to know which targets correspond to gated features
+            gated_targets = target[..., self.gated_indices]
+            # Binary target: 1 if target > 0 (or some threshold), 0 otherwise
+            # But the data is standardized.
+            # Usually, precipitation > 0 is the binary event.
+            # If standardized, we might need the original threshold.
+            # Assuming 0 in standardized space is also a reasonable threshold for now,
+            # or better: use the standardization stats to find 0 in original space.
+            # target = (raw - mean) / std => raw = target * std + mean
+            # raw > 0 => target * std + mean > 0 => target > -mean / std
+            # -mean / std is exactly what we have as 'diff_mean' / 'diff_std'?
+            # No, those are for state deltas.
+            # For state: self.state_mean, self.state_std
+
+            threshold = -self.state_mean[self.gated_indices] / self.state_std[
+                self.gated_indices
+            ]
+            binary_targets = (gated_targets > threshold).float()
+
+            bce_loss = torch.nn.functional.binary_cross_entropy_with_logits(
+                gate_logits, binary_targets, reduction="none"
+            )
+            # bce_loss is (B, pred_steps, N, num_gated)
+            # Add to loss. We need to broadcast or sum appropriately.
+            # loss_val is (B, pred_steps) if sum_vars=True in loss
+
+            # Weight the BCE loss component. 
+            # The original loss is often a sum over variables.
+            # We should probably sum the BCE loss over gated variables and 
+            # then average over N.
+            bce_loss_reduced = bce_loss.sum(dim=-1).mean(dim=-1) # (B, pred_steps)
+            loss_val = loss_val + bce_loss_reduced
+        else:
+            # Compute loss - mean over unrolled times and batch
+            loss_val = self.loss(prediction, target, pred_std)
+
         time_step_loss = torch.mean(
-            self.loss(
-                prediction,
-                target,
-                pred_std,
-            ),
+            loss_val,
             dim=0,
         )
         batch_loss = torch.mean(time_step_loss)

@@ -89,6 +89,7 @@ class OutputClamping:
 
     lower: Dict[str, float] = dataclasses.field(default_factory=dict)
     upper: Dict[str, float] = dataclasses.field(default_factory=dict)
+    gated_features: List[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass

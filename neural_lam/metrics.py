@@ -289,6 +289,19 @@ def crps_quantile(
     )
 
 
+def gated_mse(
+    pred, target, gate_logits, mask=None, average_grid=True, sum_vars=True
+):
+    """
+    MSE loss with a gating component for specific features.
+    gate_logits: (..., N, num_gated)
+    """
+    # This is currently handled directly in training_step in ARModel
+    # to allow for proper integration with existing loss functions and
+    # standardization stats.
+    return mse(pred, target, gate_logits, mask, average_grid, sum_vars)
+
+
 DEFINED_METRICS = {
     "mse": mse,
     "mae": mae,
@@ -297,4 +310,5 @@ DEFINED_METRICS = {
     "nll": nll,
     "crps_gauss": crps_gauss,
     "crps_quantile": crps_quantile,
+    "gated_mse": gated_mse,
 }

@@ -151,6 +151,30 @@ class BaseGraphModel(ARModel):
         # Compute indices and define clamping functions
         self.prepare_clamping_params(config, datastore)
 
+        # Identify gated features and define gate projection
+        gated_feature_names = config.training.output_clamping.gated_features
+        state_feature_names = datastore.get_vars_names(category="state")
+        gated_indices = [
+            state_feature_names.index(name)
+            for name in gated_feature_names
+            if name in state_feature_names
+        ]
+        self.register_buffer(
+            "gated_indices",
+            torch.tensor(gated_indices, dtype=torch.long),
+            persistent=False,
+        )
+
+        if len(gated_indices) > 0:
+            self.gate_map = utils.make_mlp(
+                [hidden_dim_grid]
+                + [hidden_dim_grid] * args.hidden_layers
+                + [len(gated_indices)],
+                layer_norm=False,
+            )
+        else:
+            self.gate_map = None
+
     @property
     def num_mesh_nodes(self):
         """
@@ -550,8 +574,50 @@ class BaseGraphModel(ARModel):
         # Rescale with one-step difference statistics
         rescaled_delta_mean = pred_delta_mean * self.diff_std + self.diff_mean
 
+        if self.gate_map is not None:
+            # Predict gate logits
+            gate_logits = self.gate_map(grid_rep)  # (B, N, num_gated)
+            gate_probs = torch.sigmoid(gate_logits)
+
+            # Apply gate to rescaled deltas
+            # Note: rescaled_delta_mean is (B, N, d_f)
+            # gate_probs is (B, N, num_gated)
+            rescaled_delta_mean[:, :, self.gated_indices] = (
+                rescaled_delta_mean[:, :, self.gated_indices] * gate_probs
+            )
+
+            # We also need to return the gate probabilities (or logits) for loss
+            # But predict_step only returns (new_state, pred_std)
+            # We can pack gate_probs into pred_std if it's otherwise None,
+            # but pred_std is used for uncertainty.
+            # A better way might be to attach it to the model or return it.
+            # Given ARModel.unroll_prediction, we should probably return it.
+            # Let's see how unroll_prediction handles pred_std.
+            gate_info = gate_logits
+        else:
+            gate_info = None
+
         # Clamp values to valid range (also add the delta to the previous state)
         new_state = self.get_clamped_new_state(rescaled_delta_mean, prev_state)
+
+        if gate_info is not None:
+            if pred_std is None:
+                pred_std = gate_info
+            elif isinstance(pred_std, torch.Tensor):
+                # Check if it has the same shape as gate_info (except last dim)
+                # This is a bit hacky, but we need to return both.
+                # If pred_std is (B, N, d_f), and gate_info is (B, N, num_gated)
+                # we could concatenate them or return a tuple/dict.
+                # But unroll_prediction expects a tensor that it can stack.
+                # Let's use a dict for now and see if unroll_prediction can handle it.
+                # Actually, unroll_prediction in ARModel stacks them:
+                # pred_std_list.append(step_pred_std)
+                # return ..., torch.stack(pred_std_list, dim=1)
+                # So it MUST be a tensor.
+                
+                # If we have both, we concatenate them along the last dimension.
+                # We'll need to handle this in training_step.
+                pred_std = torch.cat([pred_std, gate_info], dim=-1)
 
         return new_state, pred_std
 
