@@ -169,8 +169,8 @@ class MDPDatastore(BaseRegularGridDatastore):
         """
         diff_dim = "elapsed_forecast_duration" if self.is_forecast else "time"
         da_dt = self._ds[diff_dim].diff(diff_dim)
-        total_sec = da_dt.dt.total_seconds().isel(time=0)
-        return dt.timedelta(seconds=total_sec)
+        total_sec = da_dt.dt.total_seconds().isel(time=0).values
+        return dt.timedelta(seconds=int(total_sec))
 
     def get_vars_units(self, category: str) -> List[str]:
         """Return the units of the variables in the given category.
