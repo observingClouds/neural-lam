@@ -30,6 +30,11 @@ MODELS = {
 @logger.catch
 def main(input_args=None):
     """Main function for training and evaluating models."""
+    # Default loguru to INFO if not specified, but we'll re-configure after parsing args
+    import sys
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
+
     parser = ArgumentParser(
         description="Train or evaluate NeurWP models for LAM"
     )
@@ -267,6 +272,13 @@ def main(input_args=None):
 
     # Logger Settings
     parser.add_argument(
+        "--log_level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Logging level for loguru (default: INFO)",
+    )
+    parser.add_argument(
         "--logger",
         type=str,
         default="wandb",
@@ -331,6 +343,11 @@ def main(input_args=None):
         "(default: 1)",
     )
     args = parser.parse_args(input_args)
+
+    # Re-configure loguru with desired level
+    logger.remove()
+    logger.add(sys.stderr, level=args.log_level)
+
     args.var_leads_metrics_watch = {
         int(k): v for k, v in json.loads(args.var_leads_metrics_watch).items()
     }
