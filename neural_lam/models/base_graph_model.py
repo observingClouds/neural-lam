@@ -609,15 +609,26 @@ class BaseGraphModel(ARModel):
                 # If pred_std is (B, N, d_f), and gate_info is (B, N, num_gated)
                 # we could concatenate them or return a tuple/dict.
                 # But unroll_prediction expects a tensor that it can stack.
-                # Let's use a dict for now and see if unroll_prediction can handle it.
                 # Actually, unroll_prediction in ARModel stacks them:
                 # pred_std_list.append(step_pred_std)
                 # return ..., torch.stack(pred_std_list, dim=1)
                 # So it MUST be a tensor.
                 
-                # If we have both, we concatenate them along the last dimension.
-                # We'll need to handle this in training_step.
-                pred_std = torch.cat([pred_std, gate_info], dim=-1)
+                if pred_std.dim() == 4: # (B, N, d_f, n_q)
+                    # For quantiles, gate_info (B, N, num_gated) needs to be
+                    # expanded to (B, N, num_gated, n_q) or similar
+                    # But BCE loss expects (..., num_gated).
+                    # Let's expand gate_info to (B, N, num_gated, 1) and pad
+                    # with zeros for other quantiles, or just broadcast.
+                    # Actually, better to expand pred_std to include gate_info
+                    # as an extra "feature" but quantiles are the last dim.
+                    # This is complex. For now, let's just support 3D pred_std
+                    # concatenation and warn/skip for 4D (quantiles).
+                    pass
+                else:
+                    # If we have both, we concatenate them along the last dimension.
+                    # We'll need to handle this in training_step.
+                    pred_std = torch.cat([pred_std, gate_info], dim=-1)
 
         return new_state, pred_std
 

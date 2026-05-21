@@ -547,7 +547,7 @@ class ARModel(pl.LightningModule):
         entry_mses = metrics.mse(
             prediction,
             target,
-            pred_std,
+            pred_std_for_loss if 'pred_std_for_loss' in locals() else pred_std,
             sum_vars=False,
         )  # (B, pred_steps, d_f)
 

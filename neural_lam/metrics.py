@@ -118,6 +118,9 @@ def mse(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True):
     metric_val: One of (...,), (..., d_state), (..., N), (..., N, d_state),
     depending on reduction arguments.
     """
+    if pred_std is None:
+        pred_std = torch.ones_like(pred)
+
     # Replace pred_std with constant ones
     return wmse(
         pred, target, torch.ones_like(pred_std), mask, average_grid, sum_vars
@@ -173,6 +176,9 @@ def mae(pred, target, pred_std, mask=None, average_grid=True, sum_vars=True):
     metric_val: One of (...,), (..., d_state), (..., N), (..., N, d_state),
     depending on reduction arguments.
     """
+    if pred_std is None:
+        pred_std = torch.ones_like(pred)
+
     # Replace pred_std with constant ones
     return wmae(
         pred, target, torch.ones_like(pred_std), mask, average_grid, sum_vars
