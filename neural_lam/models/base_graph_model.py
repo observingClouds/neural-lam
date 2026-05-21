@@ -613,18 +613,25 @@ class BaseGraphModel(ARModel):
                 # pred_std_list.append(step_pred_std)
                 # return ..., torch.stack(pred_std_list, dim=1)
                 # So it MUST be a tensor.
-                
-                if pred_std.dim() == 4: # (B, N, d_f, n_q)
+
+                if pred_std.dim() == 4:  # (B, N, d_f, n_q)
                     # For quantiles, gate_info (B, N, num_gated) needs to be
                     # expanded to (B, N, num_gated, n_q) or similar
-                    # But BCE loss expects (..., num_gated).
-                    # Let's expand gate_info to (B, N, num_gated, 1) and pad
-                    # with zeros for other quantiles, or just broadcast.
-                    # Actually, better to expand pred_std to include gate_info
-                    # as an extra "feature" but quantiles are the last dim.
-                    # This is complex. For now, let's just support 3D pred_std
-                    # concatenation and warn/skip for 4D (quantiles).
-                    pass
+                    # BCE loss in ARModel expects (..., num_gated).
+                    # We can't easily concatenate across different dimensions.
+                    # For now, we append it as a new "quantile-like" dimension
+                    # but only if n_q=1 or we just expand it.
+                    # To keep it simple and compatible with ARModel extraction:
+                    # we expand gate_info to (B, N, num_gated, 1) and pad with
+                    # zeros to match n_q, then concatenate on d_f dim? No.
+                    
+                    # Better: concatenate on d_f dimension, with n_q = 1 for gate
+                    # but we need n_q to match.
+                    gate_info_unsqueezed = gate_info.unsqueeze(-1) # (B, N, num_gated, 1)
+                    gate_info_expanded = gate_info_unsqueezed.expand(
+                        -1, -1, -1, self.num_quantiles
+                    )
+                    pred_std = torch.cat([pred_std, gate_info_expanded], dim=-2)
                 else:
                     # If we have both, we concatenate them along the last dimension.
                     # We'll need to handle this in training_step.

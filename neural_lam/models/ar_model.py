@@ -353,7 +353,7 @@ class ARModel(pl.LightningModule):
 
             prediction_list.append(pred_state)
 
-            if self.output_std:
+            if pred_std is not None:
                 pred_std_list.append(pred_std)
 
             # Update conditioning states
@@ -363,10 +363,10 @@ class ARModel(pl.LightningModule):
         prediction = torch.stack(
             prediction_list, dim=1
         )  # (B, pred_steps, num_interior_nodes, d_f)
-        if self.output_std:
+        if len(pred_std_list) == pred_steps:
             pred_std = torch.stack(
                 pred_std_list, dim=1
-            )  # (B, pred_steps, num_interior_nodes, d_f)
+            )  # (B, pred_steps, num_interior_nodes, ...)
         else:
             pred_std = self.per_var_std  # (d_f,)
 
@@ -485,11 +485,14 @@ class ARModel(pl.LightningModule):
                 pred_std_for_loss = pred_std[..., :-num_gated]
             elif self.num_quantiles > 0:
                 # pred_std was (B, steps, N, d_f, n_q)
-                # This is tricky because concatenation was likely wrong for 5D
-                # Let's assume for now that if quantiles are used, 
-                # we haven't implemented gating properly yet or it's 4D
-                gate_logits = pred_std # Placeholder
-                pred_std_for_loss = pred_std
+                # gate_logits was expanded to (B, steps, N, num_gated, n_q)
+                # combined is (B, steps, N, d_f + num_gated, n_q)
+                gate_logits = pred_std[..., -num_gated:, :]
+                # Use mean/median of gate_logits across quantiles if needed,
+                # but for BCE we probably want just one value.
+                # Assuming all quantiles for gate are the same because of expand()
+                gate_logits = gate_logits[..., 0] # (B, steps, N, num_gated)
+                pred_std_for_loss = pred_std[..., :-num_gated, :]
             else:
                 gate_logits = pred_std
                 pred_std_for_loss = None
@@ -511,9 +514,10 @@ class ARModel(pl.LightningModule):
             # No, those are for state deltas.
             # For state: self.state_mean, self.state_std
 
-            threshold = -self.state_mean[self.gated_indices] / self.state_std[
-                self.gated_indices
-            ]
+            threshold = (
+                -self.state_mean[self.gated_indices]
+                / self.state_std[self.gated_indices]
+            )
             binary_targets = (gated_targets > threshold).float()
 
             bce_loss = torch.nn.functional.binary_cross_entropy_with_logits(
@@ -523,11 +527,13 @@ class ARModel(pl.LightningModule):
             # Add to loss. We need to broadcast or sum appropriately.
             # loss_val is (B, pred_steps) if sum_vars=True in loss
 
-            # Weight the BCE loss component. 
+            # Weight the BCE loss component.
             # The original loss is often a sum over variables.
-            # We should probably sum the BCE loss over gated variables and 
+            # We should probably sum the BCE loss over gated variables and
             # then average over N.
-            bce_loss_reduced = bce_loss.sum(dim=-1).mean(dim=-1) # (B, pred_steps)
+            bce_loss_reduced = bce_loss.sum(dim=-1).mean(
+                dim=-1
+            )  # (B, pred_steps)
             loss_val = loss_val + bce_loss_reduced
         else:
             # Compute loss - mean over unrolled times and batch
@@ -547,7 +553,7 @@ class ARModel(pl.LightningModule):
         entry_mses = metrics.mse(
             prediction,
             target,
-            pred_std_for_loss if 'pred_std_for_loss' in locals() else pred_std,
+            pred_std_for_loss if "pred_std_for_loss" in locals() else pred_std,
             sum_vars=False,
         )  # (B, pred_steps, d_f)
 
@@ -641,8 +647,8 @@ class ARModel(pl.LightningModule):
             },
             "val_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
         }
-                # Use the model's immediate previous state as input to the advection baseline
-        #prev_state = batch['init_states'][:, 1, :, 1]  # (B, 2, num_grid_nodes, d_f)
+        # Use the model's immediate previous state as input to the advection baseline
+        # prev_state = batch['init_states'][:, 1, :, 1]  # (B, 2, num_grid_nodes, d_f)
         # val_log_dict["advection"] = metrics.advection(
         #         prediction[:,0,:,1], target[:,0,:,1], prev_state, sum_vars=False
         # ).mean()
