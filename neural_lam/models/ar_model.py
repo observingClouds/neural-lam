@@ -518,6 +518,26 @@ class ARModel(pl.LightningModule):
                 -self.state_mean[self.gated_indices]
                 / self.state_std[self.gated_indices]
             )
+
+            manual_thresholds_dict = (
+                self.hparams.config.training.output_clamping.gate_thresholds
+            )
+            if manual_thresholds_dict:
+                state_vars = self._datastore.get_vars_names(category="state")
+                # Create a copy of the threshold tensor to modify
+                new_threshold = threshold.clone()
+
+                for i, idx in enumerate(self.gated_indices):
+                    var_name = state_vars[idx]
+                    if var_name in manual_thresholds_dict:
+                        phys_threshold = manual_thresholds_dict[var_name]
+                        # Standardize: (phys - mean) / std
+                        new_threshold[i] = (
+                            (phys_threshold - self.state_mean[idx])
+                            / self.state_std[idx]
+                        )
+                threshold = new_threshold
+
             binary_targets = (gated_targets > threshold).float()
 
             bce_loss = torch.nn.functional.binary_cross_entropy_with_logits(

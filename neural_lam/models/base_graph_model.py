@@ -165,6 +165,30 @@ class BaseGraphModel(ARModel):
             persistent=False,
         )
 
+        manual_thresholds_dict = (
+            config.training.output_clamping.gate_thresholds
+        )
+        gate_thresholds = []
+        for idx in gated_indices:
+            name = state_feature_names[idx]
+            if name in manual_thresholds_dict:
+                phys_threshold = manual_thresholds_dict[name]
+                standardized_threshold = (
+                    phys_threshold - self.state_mean[idx]
+                ) / self.state_std[idx]
+                gate_thresholds.append(standardized_threshold)
+            else:
+                # Default is physical zero
+                gate_thresholds.append(
+                    -self.state_mean[idx] / self.state_std[idx]
+                )
+
+        self.register_buffer(
+            "gate_thresholds",
+            torch.tensor(gate_thresholds, dtype=torch.float32),
+            persistent=False,
+        )
+
         if len(gated_indices) > 0:
             self.gate_map = utils.make_mlp(
                 [hidden_dim_grid]
@@ -582,8 +606,11 @@ class BaseGraphModel(ARModel):
             # Apply gate to rescaled deltas
             # Note: rescaled_delta_mean is (B, N, d_f)
             # gate_probs is (B, N, num_gated)
+            # Thresholding logic: (1-gate)*threshold + gate*intensity
+            # This ensures that when gate is 0, we predict the threshold.
             rescaled_delta_mean[:, :, self.gated_indices] = (
-                rescaled_delta_mean[:, :, self.gated_indices] * gate_probs
+                (1.0 - gate_probs) * self.gate_thresholds
+                + gate_probs * rescaled_delta_mean[:, :, self.gated_indices]
             )
 
             # We also need to return the gate probabilities (or logits) for loss
