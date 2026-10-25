@@ -308,6 +308,33 @@ def gated_mse(
     return mse(pred, target, gate_logits, mask, average_grid, sum_vars)
 
 
+def sorted_mse(pred, target, mask=None):
+    """
+    MSE between the sorted values over the grid, i.e. the squared
+    2-Wasserstein distance between the spatial distributions of prediction
+    and target. Penalizes mismatching quantiles (e.g. missing tails) without
+    regard to where in the domain the values are located. Never larger than
+    the MSE.
+
+    (...,) is any number of batch dimensions, potentially different
+        but broadcastable
+    pred: (..., N, d_state), prediction
+    target: (..., N, d_state), target
+    mask: (N,), boolean mask describing which grid nodes to use
+
+    Returns:
+    metric_val: (..., d_state)
+    """
+    if mask is not None:
+        pred = pred[..., mask, :]
+        target = target[..., mask, :]
+
+    # Sort in full precision, bf16 would collapse neighbouring quantiles
+    pred_sorted = torch.sort(pred.float(), dim=-2).values
+    target_sorted = torch.sort(target.float(), dim=-2).values
+    return torch.mean((pred_sorted - target_sorted) ** 2, dim=-2)
+
+
 DEFINED_METRICS = {
     "mse": mse,
     "mae": mae,

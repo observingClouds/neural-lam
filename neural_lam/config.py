@@ -94,6 +94,24 @@ class OutputClamping:
 
 
 @dataclasses.dataclass
+class QuantileMatching:
+    """
+    Configuration for an additional loss term that matches the spatial
+    distribution (quantiles over the grid) of the predicted state features to
+    that of the target, see `metrics.sorted_mse`. The term is added to the main
+    loss for every prediction step.
+
+    Attributes
+    ----------
+    weights : Dict[str, float]
+        Weight of the quantile matching term for each state feature it should
+        be applied to. State features not listed get no quantile matching term.
+    """
+
+    weights: Dict[str, float] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
 class TrainingConfig:
     """
     Configuration related to training neural-lam
@@ -113,6 +131,9 @@ class TrainingConfig:
 
     output_clamping: OutputClamping = dataclasses.field(
         default_factory=OutputClamping
+    )
+    quantile_matching: QuantileMatching = dataclasses.field(
+        default_factory=QuantileMatching
     )
     # List of pairs of timestamps as strings
     excluded_intervals: List[List[str]] = dataclasses.field(
