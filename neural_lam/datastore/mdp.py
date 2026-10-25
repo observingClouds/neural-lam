@@ -19,6 +19,83 @@ from ..utils import rank_zero_print
 from .base import BaseRegularGridDatastore, CartesianGridShape
 
 
+def move_state_to_forcing(ds: xr.Dataset, names: List[str]) -> xr.Dataset:
+    """
+    Move state features to the forcing category, together with their
+    coordinates (e.g. units) and statistics, without copying data. The moved
+    features are appended after the existing forcing features.
+
+    This allows e.g. "oracle" experiments, in which a variable is given to the
+    model as forcing from the dataset instead of being predicted.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset with `state` and `forcing` variables as created by
+        mllam-data-prep.
+    names : List[str]
+        Names of the state features to move.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with the features moved from state to forcing.
+    """
+    for category in ["state", "forcing"]:
+        if category not in ds:
+            raise ValueError(
+                f"Moving state features to forcing requires a `{category}` "
+                "variable in the dataset"
+            )
+    state_features = ds.state_feature.values.tolist()
+    unknown = [n for n in names if n not in state_features]
+    if unknown:
+        raise ValueError(
+            f"Features {unknown} to move to forcing are not state features "
+            f"({state_features})"
+        )
+
+    forcing_vars = [v for v in ds.data_vars if "forcing_feature" in ds[v].dims]
+    moved = {}
+    for forcing_var in forcing_vars:
+        state_var = "state" + forcing_var[len("forcing") :]
+        if state_var not in ds:
+            raise ValueError(
+                f"No state counterpart `{state_var}` for `{forcing_var}`"
+            )
+        moved[forcing_var] = ds[state_var].astype(ds[forcing_var].dtype)
+    ds_moved = xr.Dataset(moved).sel(state_feature=names)
+    ds_moved = ds_moved.rename(
+        {
+            c: "forcing" + c[len("state") :]
+            for c in ds_moved.coords
+            if c.startswith("state_feature")
+        }
+    )
+    # only keep coordinates that the forcing category has as well
+    ds_moved = ds_moved.drop_vars(
+        [
+            c
+            for c in ds_moved.coords
+            if c.startswith("forcing_feature") and c not in ds.coords
+        ]
+    )
+
+    ds_forcing = xr.concat(
+        [ds[forcing_vars], ds_moved],
+        dim="forcing_feature",
+        data_vars="all",
+        coords="minimal",
+        compat="override",
+        join="exact",
+    )
+    ds_out = ds.drop_dims("forcing_feature").merge(
+        ds_forcing, join="exact", compat="override"
+    )
+    keep = [f for f in state_features if f not in names]
+    return ds_out.sel(state_feature=keep)
+
+
 class MDPDatastore(BaseRegularGridDatastore):
     """
     Datastore class for datasets made with the mllam_data_prep library
@@ -31,7 +108,12 @@ class MDPDatastore(BaseRegularGridDatastore):
     SHORT_NAME = "mdp"
 
     def __init__(
-        self, config_path, overload_stats_path=None, reuse_existing=True, ds_path=None
+        self,
+        config_path,
+        overload_stats_path=None,
+        reuse_existing=True,
+        ds_path=None,
+        state_to_forcing=None,
     ):
         """
         Construct a new MDPDatastore from the configuration file at
@@ -55,6 +137,9 @@ class MDPDatastore(BaseRegularGridDatastore):
             creation date is newer than the configuration file.
         ds_path : str
             Optional, path to zarr dataset, otherwise inferred from config_path.
+        state_to_forcing : List[str]
+            Optional, state features to use as forcing instead, see
+            `move_state_to_forcing`.
 
         """
         self._config_path = Path(config_path)
@@ -84,6 +169,12 @@ class MDPDatastore(BaseRegularGridDatastore):
         if self._ds is None:
             self._ds = mdp.create_dataset(config=self._config)
             self._ds.to_zarr(fp_ds)
+
+        if state_to_forcing:
+            rank_zero_print(
+                f"Using state features {state_to_forcing} as forcing instead"
+            )
+            self._ds = move_state_to_forcing(self._ds, state_to_forcing)
 
         rank_zero_print("The loaded datastore contains the following features:")
         for category in ["state", "forcing", "static"]:

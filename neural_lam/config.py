@@ -47,6 +47,9 @@ class DatastoreSelection:
     config_path: str
     ds_path: Union[str, None] = None
     overload_stats_path: Union[str, None] = None
+    # State features to give to the model as forcing (from the dataset)
+    # instead of predicting them, only supported for the interior datastore
+    state_to_forcing: List[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -241,7 +244,16 @@ def load_config_and_datastores(
         config_path=datastore_config_path,
         overload_stats_path=overload_stats_path,
         ds_path=datastore_ds_path,
+        state_to_forcing=config.datastore.state_to_forcing,
     )
+
+    if (
+        config.datastore_boundary is not None
+        and config.datastore_boundary.state_to_forcing
+    ):
+        raise InvalidConfigError(
+            "state_to_forcing is only supported for the interior datastore"
+        )
 
     if config.datastore_boundary is not None:
         datastore_boundary_config_path = (
