@@ -99,7 +99,9 @@ class QuantileMatching:
     Configuration for an additional loss term that matches the spatial
     distribution (quantiles over the grid) of the predicted state features to
     that of the target, see `metrics.sorted_mse`. The term is added to the main
-    loss for every prediction step.
+    loss for every prediction step. With the `wmse` loss the term is scaled
+    like the wmse term of the same feature, so that a weight of 1 makes it
+    comparable to that feature's own loss term.
 
     Attributes
     ----------

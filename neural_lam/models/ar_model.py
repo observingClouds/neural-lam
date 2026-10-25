@@ -205,6 +205,13 @@ class ARModel(pl.LightningModule):
             torch.tensor(list(qm_weights.values()), dtype=torch.float32),
             persistent=False,
         )
+        # Scale the term like the wmse term of the same feature, so that the
+        # weight is relative to that feature's own loss term
+        if args.loss == "wmse" and hasattr(self, "per_var_std"):
+            qm_scale = 1.0 / self.per_var_std[self.qm_indices] ** 2
+        else:
+            qm_scale = torch.ones(len(qm_weights))
+        self.register_buffer("qm_scale", qm_scale, persistent=False)
 
         self.val_metrics = {
             "mse": [],
@@ -346,13 +353,16 @@ class ARModel(pl.LightningModule):
         prediction, target: (B, pred_steps, num_interior_nodes, d_f)
 
         Returns:
-        qm_loss: (B, pred_steps), weighted sum over configured features
+        qm_loss: (B, pred_steps), weighted sum over configured features,
+            scaled like the wmse term of each feature when using wmse
         qm_per_feature: (B, pred_steps, n_qm), unweighted sorted MSE
         """
         qm_per_feature = metrics.sorted_mse(
             prediction[..., self.qm_indices], target[..., self.qm_indices]
         )
-        qm_loss = torch.sum(qm_per_feature * self.qm_weights, dim=-1)
+        qm_loss = torch.sum(
+            qm_per_feature * self.qm_scale * self.qm_weights, dim=-1
+        )
         return qm_loss, qm_per_feature
 
     @staticmethod
