@@ -301,6 +301,20 @@ class ARModel(pl.LightningModule):
             },
         }
 
+    def on_train_start(self):
+        # Resuming restores T_max of the original run; extend it to --epochs.
+        for config in self.trainer.lr_scheduler_configs:
+            chained = config.scheduler
+            for sched in getattr(chained, "_schedulers", [chained]):
+                if isinstance(
+                    sched, torch.optim.lr_scheduler.CosineAnnealingLR
+                ) and sched.T_max != self.args.epochs:
+                    logger.info(
+                        f"Setting cosine T_max {sched.T_max} -> "
+                        f"{self.args.epochs}"
+                    )
+                    sched.T_max = self.args.epochs
+
     @staticmethod
     def expand_to_batch(x, batch_size):
         """
