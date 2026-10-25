@@ -182,6 +182,30 @@ class ARModel(pl.LightningModule):
         # Instantiate loss function
         self.loss = metrics.get_metric(args.loss)
 
+        # Optional quantile matching term added to the loss
+        qm_weights = config.training.quantile_matching.weights
+        state_feature_names = datastore.get_vars_names(category="state")
+        unknown_qm_features = set(qm_weights) - set(state_feature_names)
+        if unknown_qm_features:
+            raise ValueError(
+                f"Quantile matching weights given for {unknown_qm_features}, "
+                f"which are not state features ({state_feature_names})"
+            )
+        self.qm_feature_names = list(qm_weights)
+        self.register_buffer(
+            "qm_indices",
+            torch.tensor(
+                [state_feature_names.index(n) for n in qm_weights],
+                dtype=torch.long,
+            ),
+            persistent=False,
+        )
+        self.register_buffer(
+            "qm_weights",
+            torch.tensor(list(qm_weights.values()), dtype=torch.float32),
+            persistent=False,
+        )
+
         self.val_metrics = {
             "mse": [],
         }
@@ -314,6 +338,22 @@ class ARModel(pl.LightningModule):
                         f"{self.args.epochs}"
                     )
                     sched.T_max = self.args.epochs
+
+    def quantile_matching_loss(self, prediction, target):
+        """
+        Weighted quantile matching term for the configured state features
+
+        prediction, target: (B, pred_steps, num_interior_nodes, d_f)
+
+        Returns:
+        qm_loss: (B, pred_steps), weighted sum over configured features
+        qm_per_feature: (B, pred_steps, n_qm), unweighted sorted MSE
+        """
+        qm_per_feature = metrics.sorted_mse(
+            prediction[..., self.qm_indices], target[..., self.qm_indices]
+        )
+        qm_loss = torch.sum(qm_per_feature * self.qm_weights, dim=-1)
+        return qm_loss, qm_per_feature
 
     @staticmethod
     def expand_to_batch(x, batch_size):
@@ -573,6 +613,17 @@ class ARModel(pl.LightningModule):
             # Compute loss - mean over unrolled times and batch
             loss_val = self.loss(prediction, target, pred_std)
 
+        qm_log_dict = {}
+        if self.qm_indices.numel() > 0:
+            qm_loss, qm_per_feature = self.quantile_matching_loss(
+                prediction, target
+            )
+            loss_val = loss_val + qm_loss
+            qm_log_dict = {
+                f"train_qm_{v}": qm_per_feature[..., i].mean()
+                for i, v in enumerate(self.qm_feature_names)
+            }
+
         time_step_loss = torch.mean(
             loss_val,
             dim=0,
@@ -606,6 +657,7 @@ class ARModel(pl.LightningModule):
                 for i, v in enumerate(self._datastore.get_vars_names("state"))
             },
             "train_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
+            **qm_log_dict,
         }
         # feature_names = self._datastore.get_vars_names("state")
         # t2m_feat_idx = feature_names.index("t_2m")
@@ -652,14 +704,22 @@ class ARModel(pl.LightningModule):
         # Compute mean RMSE for first prediction step
         mean_rmse_ar_step_1 = torch.mean(torch.sqrt(entry_mses[:, 0, :]), dim=0)
 
-        time_step_loss = torch.mean(
-            self.loss(
-                prediction,
-                target,
-                pred_std,
-            ),
-            dim=0,
-        )  # (time_steps-1)
+        loss_val = self.loss(
+            prediction,
+            target,
+            pred_std,
+        )
+        qm_log_dict = {}
+        if self.qm_indices.numel() > 0:
+            qm_loss, qm_per_feature = self.quantile_matching_loss(
+                prediction, target
+            )
+            loss_val = loss_val + qm_loss
+            qm_log_dict = {
+                f"val_qm_{v}": qm_per_feature[..., i].mean()
+                for i, v in enumerate(self.qm_feature_names)
+            }
+        time_step_loss = torch.mean(loss_val, dim=0)  # (time_steps-1)
         mean_loss = torch.mean(time_step_loss)
 
         # any_invalid = self._check_nan_inf_loss(mean_loss, batch_idx)
@@ -680,6 +740,7 @@ class ARModel(pl.LightningModule):
                 for i, v in enumerate(self._datastore.get_vars_names("state"))
             },
             "val_lr": self.trainer.optimizers[0].param_groups[0]["lr"],
+            **qm_log_dict,
         }
         # Use the model's immediate previous state as input to the advection baseline
         # prev_state = batch['init_states'][:, 1, :, 1]  # (B, 2, num_grid_nodes, d_f)
