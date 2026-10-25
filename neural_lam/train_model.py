@@ -1,6 +1,10 @@
 # Standard library
+import faulthandler
 import json
+import os
 import random
+import signal
+import sys
 import time
 from argparse import ArgumentParser
 from pathlib import Path
@@ -26,10 +30,14 @@ MODELS = {
     "hi_lam_parallel": HiLAMParallel,
 }
 
+_FINISHED_OK = False
+
 
 @logger.catch
 def main(input_args=None):
     """Main function for training and evaluating models."""
+    # `scancel -s USR1 <jobid>` dumps all thread stacks into the job log
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     # Default loguru to INFO if not specified, but we'll re-configure after parsing args
     import sys
     logger.remove()
@@ -532,6 +540,14 @@ def main(input_args=None):
         ckpt_for_fit = args.load if args.restore_opt else None
         trainer.fit(model=model, datamodule=data_module, ckpt_path=ckpt_for_fit, weights_only=False)
 
+    global _FINISHED_OK
+    _FINISHED_OK = True
+
 
 if __name__ == "__main__":
     main()
+    if _FINISHED_OK:
+        # Jobs hung for hours in interpreter shutdown hooks after finishing
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
