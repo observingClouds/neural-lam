@@ -551,3 +551,6 @@ if __name__ == "__main__":
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(0)
+    # logger.catch swallows exceptions, so report failure through the exit
+    # code for Slurm afterok dependencies
+    sys.exit(1)
