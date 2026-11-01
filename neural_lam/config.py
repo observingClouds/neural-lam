@@ -473,6 +473,9 @@ class TrainRunConfig:
         State variables to plot example predictions for (all if empty).
     save_every_n_epochs : int or None, default None
         If set, additionally keep a checkpoint every this many epochs.
+    log_variable_rmse : bool, default False
+        Log the RMSE of each state variable at the first step and the
+        learning rate during training and validation.
     """
 
     epochs: int = 200
@@ -505,6 +508,7 @@ class TrainRunConfig:
     save_eval_to_zarr_path: str | None = None
     plot_vars: list[str] = dataclasses.field(default_factory=list)
     save_every_n_epochs: int | None = None
+    log_variable_rmse: bool = False
 
 
 @dataclasses.dataclass

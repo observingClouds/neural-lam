@@ -148,8 +148,8 @@ def build_predictor(
             time_delta_enc_dim=getattr(args, "time_delta_enc_dim", None),
             shared_grid_embedder=getattr(args, "shared_grid_embedder", False),
             num_quantiles=getattr(args, "num_quantiles", 0),
-            gated_features=output_clamping.gated_features,
-            gate_thresholds=output_clamping.gate_thresholds,
+            gated_features=getattr(output_clamping, "gated_features", None),
+            gate_thresholds=getattr(output_clamping, "gate_thresholds", None),
             graph_dir=getattr(args, "graph_dir", None),
             additional_domains=additional_domains,
         )
@@ -635,6 +635,12 @@ def build_parser() -> ArgumentParser:
         help="Use gradient checkpointing in-between each unrolling step",
     )
     train_group.add_argument(
+        "--log_variable_rmse",
+        action="store_true",
+        help="Log the first-step RMSE of each state variable and the learning "
+        "rate during training and validation",
+    )
+    train_group.add_argument(
         "--save_every_n_epochs",
         type=int,
         default=None,
@@ -1118,8 +1124,10 @@ def main(input_args: list[str] | None = None) -> None:
     """Main function for training and evaluating models."""
     parser = build_parser()
     args = parser.parse_args(input_args)
-    logger.remove()
-    logger.add(sys.stderr, level=args.log_level)
+    log_level = getattr(args, "log_level", None)
+    if isinstance(log_level, str):
+        logger.remove()
+        logger.add(sys.stderr, level=log_level)
     run(args)
 
 

@@ -168,6 +168,7 @@ class BaseProbabilisticARForecaster(BaseProbabilisticForecaster):
         init_states: torch.Tensor,
         forcing_features: torch.Tensor,
         boundary_states: torch.Tensor,
+        boundary_forcing: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Unroll one sampled auto-regressive forecast.
@@ -185,6 +186,9 @@ class BaseProbabilisticARForecaster(BaseProbabilisticForecaster):
             Shape ``(B, pred_steps, num_grid_nodes, num_state_vars)``. True
             state values used ONLY to overwrite boundary nodes at each AR
             step.
+        boundary_forcing : torch.Tensor, optional
+            Forcing from a separate boundary datastore, passed on to
+            boundary-forced predictors.
 
         Returns
         -------
@@ -203,4 +207,5 @@ class BaseProbabilisticARForecaster(BaseProbabilisticForecaster):
             boundary_states,
             self.boundary_mask,
             self.interior_mask,
+            boundary_forcing=boundary_forcing,
         )

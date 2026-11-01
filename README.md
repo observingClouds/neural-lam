@@ -630,6 +630,8 @@ Further options:
 * `--grad_checkpointing`: gradient checkpointing in-between unrolled steps
 * `--num_quantiles` with `--loss crps_quantile`: predict quantiles
 * `--save_every_n_epochs`: additionally keep checkpoints every n epochs
+* `--log_variable_rmse`: log the first-step RMSE of each variable and the
+  learning rate
 * `--config_paths <config 1> <config 2> --graph_names <graph 1> <graph 2>`:
   train on several domains together (validation and testing use the first)
 * `--log_level`: log level of loguru

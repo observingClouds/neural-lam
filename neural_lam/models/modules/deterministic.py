@@ -213,6 +213,8 @@ class DeterministicForecastingModule(BaseForecastingModule):
         batch_size : int
             Batch size for logging.
         """
+        if not self._run_arg("log_variable_rmse", False):
+            return
         entry_mses = metrics.mse(
             prediction[:, :1],
             target_states[:, :1],

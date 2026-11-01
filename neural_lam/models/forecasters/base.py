@@ -75,6 +75,7 @@ class BaseForecaster(nn.Module, ABC):
         init_states: torch.Tensor,
         forcing_features: torch.Tensor,
         boundary_states: torch.Tensor,
+        boundary_forcing: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Produce one forecast of length ``pred_steps``.
@@ -110,6 +111,10 @@ class BaseForecaster(nn.Module, ABC):
             dedicated boundary-forcing input in #138 (training on interior +
             boundary datastore), at which point this parameter will be
             removed.
+        boundary_forcing : torch.Tensor, optional
+            Shape ``(B, pred_steps, num_boundary_nodes, num_boundary_feats)``.
+            Forcing from a separate boundary datastore, used by
+            boundary-forced predictors.
 
         Returns
         -------

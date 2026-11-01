@@ -1296,6 +1296,8 @@ class BaseForecastingModule(pl.LightningModule, ABC):
         prefix : str
             Split prefix (``val``/``test``).
         """
+        if self.logger is None:
+            return
         num_steps = next(iter(xr_data_vars.values()))[1].shape[1]
         lead_time = (
             np.arange(1, num_steps + 1)
