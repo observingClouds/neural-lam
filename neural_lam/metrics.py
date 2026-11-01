@@ -393,6 +393,156 @@ def crps_gauss(
     )
 
 
+def crps_quantile(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    pred_std: torch.Tensor,
+    mask: torch.Tensor | None = None,
+    average_grid: bool = True,
+    sum_vars: bool = True,
+) -> torch.Tensor:
+    """
+    Quantile-based CRPS (mean pinball loss over equally spaced quantiles).
+
+    Parameters
+    ----------
+    pred : torch.Tensor
+        Shape ``(..., N, num_variables)``. Point prediction, unused here.
+    target : torch.Tensor
+        Shape ``(..., N, num_variables)``. Ground-truth target.
+    pred_std : torch.Tensor
+        Shape ``(..., N, num_variables, num_quantiles)``. Predicted
+        quantiles at levels ``1/(n+1), ..., n/(n+1)`` (passed in the
+        ``pred_std`` slot like other distributional outputs).
+    mask : torch.Tensor or None, optional
+        Shape ``(N,)``. Boolean mask over grid nodes.
+    average_grid : bool, optional
+        If True, average over the grid dimension (default True).
+    sum_vars : bool, optional
+        If True, sum over the variable dimension (default True).
+
+    Returns
+    -------
+    torch.Tensor
+        Reduced metric values, see :func:`mask_and_reduce_metric`.
+    """
+    pred_quantiles = pred_std
+    n_quantiles = pred_quantiles.shape[-1]
+    quantiles = torch.linspace(
+        1 / (n_quantiles + 1),
+        n_quantiles / (n_quantiles + 1),
+        n_quantiles,
+        device=pred_quantiles.device,
+    )
+    errors = target.unsqueeze(-1) - pred_quantiles
+    pinball_loss = torch.max(quantiles * errors, (quantiles - 1) * errors)
+    # Factor 2 so that the mean pinball loss approximates the CRPS
+    entry_crps = 2 * torch.mean(pinball_loss, dim=-1)
+    return mask_and_reduce_metric(
+        entry_crps, mask=mask, average_grid=average_grid, sum_vars=sum_vars
+    )
+
+
+def gated_mse(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    pred_std: torch.Tensor | None = None,
+    mask: torch.Tensor | None = None,
+    average_grid: bool = True,
+    sum_vars: bool = True,
+) -> torch.Tensor:
+    """
+    MSE loss to use together with gated features. The gate's binary
+    cross-entropy term is added by the forecaster, so this is plain
+    :func:`mse`.
+
+    Parameters
+    ----------
+    pred, target, pred_std, mask, average_grid, sum_vars
+        See :func:`mse`.
+
+    Returns
+    -------
+    torch.Tensor
+        Reduced metric values, see :func:`mse`.
+    """
+    return mse(pred, target, pred_std, mask, average_grid, sum_vars)
+
+
+def advection(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    state: torch.Tensor,
+    mask: torch.Tensor | None = None,
+    average_grid: bool = True,
+    sum_vars: bool = True,
+) -> torch.Tensor:
+    """
+    Diagnostic ratio ``|pred - state| / |pred - target|``; values above 1
+    indicate that the prediction moved away from the previous state further
+    than it is from the target (i.e. advection may be present).
+
+    Parameters
+    ----------
+    pred : torch.Tensor
+        Shape ``(..., N, num_variables)``. Prediction.
+    target : torch.Tensor
+        Shape ``(..., N, num_variables)``. Target.
+    state : torch.Tensor
+        Shape ``(..., N, num_variables)``. Previous state.
+    mask, average_grid, sum_vars
+        See :func:`mask_and_reduce_metric`.
+
+    Returns
+    -------
+    torch.Tensor
+        Reduced metric values.
+    """
+    entry_advection = torch.abs(pred - state) / torch.abs(pred - target)
+    return mask_and_reduce_metric(
+        entry_advection,
+        mask=mask,
+        average_grid=average_grid,
+        sum_vars=sum_vars,
+    )
+
+
+def sorted_mse(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """
+    MSE between the values sorted over the grid, i.e. the squared
+    2-Wasserstein distance between the spatial distributions of prediction
+    and target. Penalizes mismatching quantiles (e.g. missing tails) without
+    regard to where in the domain the values are located. Never larger than
+    the MSE.
+
+    Parameters
+    ----------
+    pred : torch.Tensor
+        Shape ``(..., N, num_variables)``. Prediction.
+    target : torch.Tensor
+        Shape ``(..., N, num_variables)``. Target.
+    mask : torch.Tensor or None, optional
+        Shape ``(N,)``. Boolean mask over grid nodes to use.
+
+    Returns
+    -------
+    torch.Tensor
+        Shape ``(..., num_variables)``.
+    """
+    if mask is not None:
+        pred = pred[..., mask, :]
+        target = target[..., mask, :]
+
+    # Sort in full precision, bf16 would collapse neighbouring quantiles
+    pred_sorted = torch.sort(pred.float(), dim=-2).values
+    target_sorted = torch.sort(target.float(), dim=-2).values
+    return torch.mean((pred_sorted - target_sorted) ** 2, dim=-2)
+
+
 DEFINED_METRICS: dict[str, Callable[..., torch.Tensor]] = {
     "mse": mse,
     "mae": mae,
@@ -400,6 +550,8 @@ DEFINED_METRICS: dict[str, Callable[..., torch.Tensor]] = {
     "wmae": wmae,
     "nll": nll,
     "crps_gauss": crps_gauss,
+    "crps_quantile": crps_quantile,
+    "gated_mse": gated_mse,
 }
 
 

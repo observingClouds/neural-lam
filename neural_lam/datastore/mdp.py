@@ -21,6 +21,83 @@ from ..utils.logging import log_on_rank_zero
 from .base import BaseDatastore, CartesianGridShape
 
 
+def move_state_to_forcing(ds: xr.Dataset, names: list[str]) -> xr.Dataset:
+    """
+    Move state features to the forcing category, together with their
+    coordinates (e.g. units) and statistics, without copying data. The moved
+    features are appended after the existing forcing features.
+
+    This allows e.g. "oracle" experiments, in which a variable is given to the
+    model as forcing from the dataset instead of being predicted.
+
+    Parameters
+    ----------
+    ds : xr.Dataset
+        Dataset with `state` and `forcing` variables as created by
+        mllam-data-prep.
+    names : list[str]
+        Names of the state features to move.
+
+    Returns
+    -------
+    xr.Dataset
+        Dataset with the features moved from state to forcing.
+    """
+    for category in ["state", "forcing"]:
+        if category not in ds:
+            raise ValueError(
+                f"Moving state features to forcing requires a `{category}` "
+                "variable in the dataset"
+            )
+    state_features = ds.state_feature.values.tolist()
+    unknown = [n for n in names if n not in state_features]
+    if unknown:
+        raise ValueError(
+            f"Features {unknown} to move to forcing are not state features "
+            f"({state_features})"
+        )
+
+    forcing_vars = [v for v in ds.data_vars if "forcing_feature" in ds[v].dims]
+    moved = {}
+    for forcing_var in forcing_vars:
+        state_var = "state" + forcing_var[len("forcing") :]
+        if state_var not in ds:
+            raise ValueError(
+                f"No state counterpart `{state_var}` for `{forcing_var}`"
+            )
+        moved[forcing_var] = ds[state_var].astype(ds[forcing_var].dtype)
+    ds_moved = xr.Dataset(moved).sel(state_feature=names)
+    ds_moved = ds_moved.rename(
+        {
+            c: "forcing" + c[len("state") :]
+            for c in ds_moved.coords
+            if c.startswith("state_feature")
+        }
+    )
+    # only keep coordinates that the forcing category has as well
+    ds_moved = ds_moved.drop_vars(
+        [
+            c
+            for c in ds_moved.coords
+            if c.startswith("forcing_feature") and c not in ds.coords
+        ]
+    )
+
+    ds_forcing = xr.concat(
+        [ds[forcing_vars], ds_moved],
+        dim="forcing_feature",
+        data_vars="all",
+        coords="minimal",
+        compat="override",
+        join="exact",
+    )
+    ds_out = ds.drop_dims("forcing_feature").merge(
+        ds_forcing, join="exact", compat="override"
+    )
+    keep = [f for f in state_features if f not in names]
+    return ds_out.sel(state_feature=keep)
+
+
 class MDPDatastore(BaseDatastore):
     """
     Datastore class for datasets made with the mllam_data_prep library
@@ -38,6 +115,9 @@ class MDPDatastore(BaseDatastore):
         config_path: str | Path,
         n_boundary_points: int = 30,
         reuse_existing: bool = True,
+        ds_path: str | Path | None = None,
+        overload_stats_path: str | Path | None = None,
+        state_to_forcing: list[str] | None = None,
     ) -> None:
         """
         Construct a new MDPDatastore from the configuration file at
@@ -59,6 +139,16 @@ class MDPDatastore(BaseDatastore):
         reuse_existing : bool
             Whether to reuse an existing dataset zarr file if it exists and its
             creation date is newer than the configuration file.
+        ds_path : str or Path, optional
+            Explicit path to the dataset, otherwise inferred from
+            `config_path`. A path ending in `.json` is opened as a kerchunk
+            reference (virtual) dataset.
+        overload_stats_path : str or Path, optional
+            Path to the config file of another mdp datastore. Standardization
+            statistics are read from that datastore instead.
+        state_to_forcing : list of str, optional
+            State features to use as forcing instead, see
+            :func:`move_state_to_forcing`.
 
         Raises
         ------
@@ -70,9 +160,12 @@ class MDPDatastore(BaseDatastore):
         self._config_path = Path(config_path).resolve()
         self._root_path = self._config_path.parent
         self._config = mdp.Config.from_yaml_file(self._config_path)
-        fp_ds = self._root_path / self._config_path.name.replace(
-            ".yaml", ".zarr"
-        )
+        if ds_path is not None:
+            fp_ds = Path(ds_path)
+        else:
+            fp_ds = self._root_path / self._config_path.name.replace(
+                ".yaml", ".zarr"
+            )
 
         _ds = None
         if reuse_existing and fp_ds.exists():
@@ -83,7 +176,15 @@ class MDPDatastore(BaseDatastore):
                     f"The old zarr archive (in {fp_ds}) will be used."
                     "To generate new zarr-archive, move the old one first."
                 )
-            _ds = xr.open_zarr(fp_ds, consolidated=True)
+            if fp_ds.suffix == ".json":
+                # kerchunk reference file describing a virtual dataset
+                _ds = xr.open_zarr(
+                    "reference://",
+                    storage_options={"fo": fp_ds.as_posix()},
+                    consolidated=False,
+                )
+            else:
+                _ds = xr.open_zarr(fp_ds, consolidated=True)
 
         if _ds is None:
             _ds = mdp.create_dataset(config=self._config_for_creation())
@@ -95,8 +196,25 @@ class MDPDatastore(BaseDatastore):
                 "nor 'forcing' data. At least one is required."
             )
 
+        if state_to_forcing:
+            log_on_rank_zero(
+                f"Using state features {state_to_forcing} as forcing instead"
+            )
+            _ds = move_state_to_forcing(_ds, state_to_forcing)
+
         self._ds = _ds
         self._n_boundary_points = n_boundary_points
+        self.is_forecast = "elapsed_forecast_duration" in self._ds.dims
+        if overload_stats_path is not None:
+            log_on_rank_zero(
+                "Using data statistics from other datastore at path: "
+                f"{overload_stats_path}"
+            )
+            self.stats_datastore: MDPDatastore | None = MDPDatastore(
+                config_path=overload_stats_path
+            )
+        else:
+            self.stats_datastore = None
         self.is_ensemble = (
             "state" in self._ds and "ensemble_member" in self._ds["state"].dims
         )
@@ -124,7 +242,7 @@ class MDPDatastore(BaseDatastore):
 
         log_on_rank_zero("With the following splits (over time):")
         for split in required_splits:
-            da_split = self._ds.splits.sel(split_name=split)
+            da_split = self._split_bounds(split)
             da_split_start = da_split.sel(split_part="start").load().item()
             da_split_end = da_split.sel(split_part="end").load().item()
             log_on_rank_zero(
@@ -145,6 +263,36 @@ class MDPDatastore(BaseDatastore):
         if dim_order is None:
             raise ValueError("Could not determine dim_order from inputs.")
         self.spatial_coordinates = dim_order
+
+    def _split_bounds(self, split: str) -> xr.DataArray:
+        """Return the `splits` entry for `split`, dropping any extra
+        `grid_index` dimension (identical for all grid points).
+
+        Parameters
+        ----------
+        split : str
+            Name of the split (train/val/test).
+
+        Returns
+        -------
+        xr.DataArray
+            Split bounds with a `split_part` dimension.
+        """
+        da_split = self._ds.splits.sel(split_name=split)
+        if "grid_index" in da_split.dims:
+            da_split = da_split.isel(grid_index=0)
+        return da_split
+
+    def set_n_boundary_points(self, n_boundary_points: int) -> None:
+        """Change the boundary-mask width, before the mask is first used.
+
+        Parameters
+        ----------
+        n_boundary_points : int
+            New width, in grid points, of the boundary.
+        """
+        self._n_boundary_points = n_boundary_points
+        self.__dict__.pop("boundary_mask", None)
 
     def _config_for_creation(self) -> mdp.Config:
         """Return the config to build the dataset from, with a relative
@@ -200,8 +348,9 @@ class MDPDatastore(BaseDatastore):
             The length of the time steps as a datetime.timedelta object.
 
         """
-        da_dt = self._ds["time"].diff("time")
-        total_sec = da_dt.dt.total_seconds().isel(time=0).astype(int)
+        diff_dim = "elapsed_forecast_duration" if self.is_forecast else "time"
+        da_dt = self._ds[diff_dim].diff(diff_dim)
+        total_sec = da_dt.dt.total_seconds().isel({diff_dim: 0}).astype(int)
         return timedelta(seconds=int(total_sec.item()))
 
     def get_vars_units(self, category: str) -> list[str]:
@@ -347,20 +496,15 @@ class MDPDatastore(BaseDatastore):
         # set multi-index for grid-index
         da_category = da_category.set_index(grid_index=self.spatial_coordinates)
 
-        if "time" in da_category.dims:
-            t_start = (
-                self._ds.splits.sel(split_name=split)
-                .sel(split_part="start")
-                .load()
-                .item()
+        # Forecast datasets are split along their analysis (launch) times
+        temporal_dim = "analysis_time" if self.is_forecast else "time"
+        if temporal_dim in da_category.dims:
+            da_split = self._split_bounds(split)
+            t_start = da_split.sel(split_part="start").load().item()
+            t_end = da_split.sel(split_part="end").load().item()
+            da_category = da_category.sel(
+                {temporal_dim: slice(t_start, t_end)}
             )
-            t_end = (
-                self._ds.splits.sel(split_name=split)
-                .sel(split_part="end")
-                .load()
-                .item()
-            )
-            da_category = da_category.sel(time=slice(t_start, t_end))
 
         dim_order = self.expected_dim_order(category=category)
         da_category = da_category.transpose(*dim_order)
@@ -392,6 +536,12 @@ class MDPDatastore(BaseDatastore):
             differences for state variables).
 
         """
+        if self.stats_datastore is not None:
+            # Use statistics from another datastore instead
+            return self.stats_datastore.get_standardization_dataarray(
+                category=category
+            )
+
         ops = ["mean", "std"]
         split = "train"
         stats_variables = {
@@ -399,14 +549,22 @@ class MDPDatastore(BaseDatastore):
         }
 
         ds_stats = self._ds[stats_variables.keys()].rename(stats_variables)
+        # Statistics stored per grid point but identical for all of them
+        if "grid_index" in ds_stats.dims:
+            ds_stats = ds_stats.isel(grid_index=0)
 
         # Add standardized state diff stats
         if category == "state":
             ds_stats = ds_stats.assign(
                 {
-                    f"state_diff_{op}_standardized": self._ds[
-                        f"state__{split}__diff_{op}"
-                    ]
+                    f"state_diff_{op}_standardized": (
+                        self._ds[f"state__{split}__diff_{op}"].isel(
+                            grid_index=0
+                        )
+                        if "grid_index"
+                        in self._ds[f"state__{split}__diff_{op}"].dims
+                        else self._ds[f"state__{split}__diff_{op}"]
+                    )
                     / ds_stats["state_std"]
                     for op in ops
                 }
@@ -443,8 +601,10 @@ class MDPDatastore(BaseDatastore):
             )
 
         ds_unstacked = self.unstack_grid_coords(da_or_ds=self._ds)
-        da_state_variable = (
-            ds_unstacked["state"].isel(time=0).isel(state_feature=0)
+        da_state = ds_unstacked["state"]
+        # Reduce to the spatial dims (time/forecast/ensemble dims vary)
+        da_state_variable = da_state.isel(
+            {d: 0 for d in da_state.dims if d not in self.spatial_coordinates}
         )
         da_domain_allzero = xr.zeros_like(da_state_variable)
         # slice(n, -n) is empty (not "the whole array") when n == 0
@@ -649,10 +809,18 @@ class MDPDatastore(BaseDatastore):
         elif "lat" in lookup_ds.coords and "lon" in lookup_ds.coords:
             lon = lookup_ds.lon
             lat = lookup_ds.lat
+        elif "clat" in lookup_ds.coords and "clon" in lookup_ds.coords:
+            # ICON-style unstructured grid cell centres
+            lon = lookup_ds.clon
+            lat = lookup_ds.clat
         else:
             # Not saved, use method from BaseDatastore to derive from x/y
             return super().get_lat_lon(category)
 
+        # Coordinates stored in radians (e.g. ICON) are converted to degrees
+        if np.max(lon) < 1 and np.max(lat) < 1:
+            lon = np.rad2deg(lon)
+            lat = np.rad2deg(lat)
         coords = np.stack((lon.values, lat.values), axis=1)
         return coords
 

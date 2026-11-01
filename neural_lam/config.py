@@ -34,12 +34,29 @@ class DatastoreSelection:
     n_boundary_points : int, optional
         Overrides :class:`MDPDatastore`'s default boundary-mask width (30),
         only valid for `kind: mdp`. Set it to 0 when the boundary forcing
-        comes from a separate datastore.
+        comes from a separate datastore. If unset and a separate boundary
+        datastore is configured, the interior datastore uses 0.
+    ds_path : str, optional
+        Explicit path to the dataset (a zarr directory, or a kerchunk
+        reference ``.json`` for virtual datasets), only valid for
+        `kind: mdp`. If not given, the zarr next to the datastore config is
+        used.
+    overload_stats_path : str, optional
+        Path (relative to the neural-lam config) to another mdp datastore
+        config whose standardization statistics should be used instead of
+        this datastore's own, only valid for `kind: mdp`.
+    state_to_forcing : list of str
+        State features to give to the model as forcing (taken from the
+        dataset) instead of predicting them. Only supported for the interior
+        mdp datastore.
     """
 
     kind: str
     config_path: str
     n_boundary_points: int | None = None
+    ds_path: str | None = None
+    overload_stats_path: str | None = None
+    state_to_forcing: list[str] = dataclasses.field(default_factory=list)
 
     def __post_init__(self) -> None:
         """
@@ -90,10 +107,40 @@ class OutputClamping:
         The minimum value to clamp each output feature to.
     upper : dict[str, float]
         The maximum value to clamp each output feature to.
+    gated_features : list[str]
+        State features whose predicted increment is gated by a learned
+        probability of the feature exceeding a threshold (e.g. precipitation
+        being non-zero). A binary cross-entropy term on the gate is added to
+        the training loss.
+    gate_thresholds : dict[str, float]
+        Physical threshold per gated feature. Features not listed use a
+        threshold of physical zero.
     """
 
     lower: dict[str, float] = dataclasses.field(default_factory=dict)
     upper: dict[str, float] = dataclasses.field(default_factory=dict)
+    gated_features: list[str] = dataclasses.field(default_factory=list)
+    gate_thresholds: dict[str, float] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass
+class QuantileMatching:
+    """
+    Configuration for an additional loss term that matches the spatial
+    distribution (quantiles over the grid) of the predicted state features to
+    that of the target, see `metrics.sorted_mse`. The term is added to the main
+    loss for every prediction step. With the `wmse` loss the term is scaled
+    like the wmse term of the same feature, so that a weight of 1 makes it
+    comparable to that feature's own loss term.
+
+    Attributes
+    ----------
+    weights : dict[str, float]
+        Weight of the quantile matching term for each state feature it should
+        be applied to. State features not listed get no quantile matching term.
+    """
+
+    weights: dict[str, float] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass
@@ -111,6 +158,12 @@ class TrainingConfig:
     output_clamping : OutputClamping
         Per-feature lower / upper clamping bounds applied to the model output.
         Defaults to an empty ``OutputClamping`` (no clamping).
+    quantile_matching : QuantileMatching
+        Optional extra loss term matching the spatial value distribution of
+        selected state features. Defaults to no such term.
+    excluded_intervals : list[list[str]]
+        Pairs of ``[start, end]`` timestamps; training samples whose time
+        window overlaps any of these intervals are not used.
     """
 
     state_feature_weighting: (
@@ -119,6 +172,12 @@ class TrainingConfig:
 
     output_clamping: OutputClamping = dataclasses.field(
         default_factory=OutputClamping
+    )
+    quantile_matching: QuantileMatching = dataclasses.field(
+        default_factory=QuantileMatching
+    )
+    excluded_intervals: list[list[str]] = dataclasses.field(
+        default_factory=list
     )
 
 
@@ -233,14 +292,27 @@ def load_config_and_datastore(
     interior_datastores = {}
     boundary_datastores = {}
     for name, selection in config.datastores.items():
+        overload_stats_path = (
+            None
+            if selection.overload_stats_path is None
+            else config_dir / selection.overload_stats_path
+        )
         datastore = init_datastore(
             datastore_kind=selection.kind,
             config_path=config_dir / selection.config_path,
             n_boundary_points=selection.n_boundary_points,
+            ds_path=selection.ds_path,
+            overload_stats_path=overload_stats_path,
+            state_to_forcing=selection.state_to_forcing or None,
         )
         if datastore.get_num_data_vars(category="state") > 0:
             interior_datastores[name] = datastore
         else:
+            if selection.state_to_forcing:
+                raise InvalidConfigError(
+                    "state_to_forcing is only supported for the interior "
+                    f"datastore, but was set for `{name}`."
+                )
             boundary_datastores[name] = datastore
 
     if len(interior_datastores) != 1:
@@ -256,8 +328,17 @@ def load_config_and_datastore(
             f"were found in {config_path}: {sorted(boundary_datastores)}."
         )
 
-    (datastore,) = interior_datastores.values()
+    ((interior_name, datastore),) = interior_datastores.items()
     datastore_boundary = next(iter(boundary_datastores.values()), None)
+
+    # With boundary forcing from a separate datastore the whole interior
+    # domain is predicted, so default to no boundary mask in the interior.
+    if (
+        datastore_boundary is not None
+        and config.datastores[interior_name].n_boundary_points is None
+        and isinstance(datastore, MDPDatastore)
+    ):
+        datastore.set_n_boundary_points(0)
 
     return (
         config,

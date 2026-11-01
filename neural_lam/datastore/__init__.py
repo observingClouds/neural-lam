@@ -22,6 +22,9 @@ def init_datastore(
     datastore_kind: str,
     config_path: str | Path,
     n_boundary_points: int | None = None,
+    ds_path: str | Path | None = None,
+    overload_stats_path: str | Path | None = None,
+    state_to_forcing: list[str] | None = None,
 ) -> BaseDatastore:
     """
     Instantiate a datastore based on its short-name identifier.
@@ -36,6 +39,14 @@ def init_datastore(
         Forwarded to :class:`~neural_lam.datastore.mdp.MDPDatastore` when
         ``datastore_kind`` is ``"mdp"``, overriding its default boundary-mask
         width. Must be left unset for other datastore kinds.
+    ds_path : str | pathlib.Path, optional
+        Explicit dataset path, only supported for ``"mdp"``.
+    overload_stats_path : str | pathlib.Path, optional
+        Config of another mdp datastore to take standardization statistics
+        from, only supported for ``"mdp"``.
+    state_to_forcing : list of str, optional
+        State features to move to the forcing category, only supported for
+        ``"mdp"``.
 
     Returns
     -------
@@ -45,9 +56,10 @@ def init_datastore(
     Raises
     ------
     NotImplementedError
-        If ``datastore_kind`` is not registered.
+        If ``datastore_kind`` is not registered, or if ``state_to_forcing``
+        is set for a non-mdp datastore.
     ValueError
-        If ``n_boundary_points`` is set for a ``datastore_kind`` other than
+        If an mdp-only option is set for a ``datastore_kind`` other than
         :data:`MDPDatastore.SHORT_NAME`.
     """
     DatastoreClass = DATASTORES.get(datastore_kind)
@@ -57,15 +69,26 @@ def init_datastore(
             f"Datastore kind {datastore_kind} is not implemented"
         )
 
-    if n_boundary_points is None:
+    mdp_kwargs = {
+        "n_boundary_points": n_boundary_points,
+        "ds_path": ds_path,
+        "overload_stats_path": overload_stats_path,
+        "state_to_forcing": state_to_forcing,
+    }
+    mdp_kwargs = {k: v for k, v in mdp_kwargs.items() if v is not None}
+
+    if not mdp_kwargs:
         return DatastoreClass(config_path=config_path)
 
     if DatastoreClass is not MDPDatastore:
+        if "state_to_forcing" in mdp_kwargs:
+            raise NotImplementedError(
+                "state_to_forcing is only implemented for the "
+                f"{MDPDatastore.SHORT_NAME} datastore"
+            )
         raise ValueError(
-            "`n_boundary_points` is only supported for "
+            f"`{'`, `'.join(mdp_kwargs)}` is only supported for "
             f"`kind: {MDPDatastore.SHORT_NAME}` datastores, but was set for "
             f"a `kind: {datastore_kind}` datastore."
         )
-    return MDPDatastore(
-        config_path=config_path, n_boundary_points=n_boundary_points
-    )
+    return MDPDatastore(config_path=config_path, **mdp_kwargs)

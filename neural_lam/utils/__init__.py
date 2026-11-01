@@ -10,11 +10,18 @@ from .graph import (
     zero_index_g2m,
     zero_index_m2g,
 )
+from .grid import (
+    get_interior_mask,
+    get_stacked_lat_lons,
+    get_stacked_xy,
+    project_lat_lons,
+)
 from .logging import (
     init_training_logger_metrics,
     log_on_rank_zero,
     setup_training_logger,
 )
+from .logging import log_on_rank_zero as rank_zero_print
 from .networks import make_gnn_seq, make_mlp
 from .plot import fractional_plot_bundle, has_working_latex
 from .tensor import inverse_sigmoid, inverse_softplus
@@ -31,6 +38,9 @@ __all__ = [
     "compute_grid_input_dim",
     "fractional_plot_bundle",
     "get_integer_time",
+    "get_interior_mask",
+    "get_stacked_lat_lons",
+    "get_stacked_xy",
     "get_time_crop_slice",
     "get_time_step",
     "has_working_latex",
@@ -42,6 +52,8 @@ __all__ = [
     "log_on_rank_zero",
     "make_gnn_seq",
     "make_mlp",
+    "project_lat_lons",
+    "rank_zero_print",
     "setup_training_logger",
     "zero_index_edge_index",
     "zero_index_g2m",
