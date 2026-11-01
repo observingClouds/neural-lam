@@ -376,6 +376,21 @@ class ModelConfig:
         GNN layer type for upward mesh message passing.
     mesh_down_gnn_type : str, default "InteractionNet"
         GNN layer type for downward mesh message passing.
+    graph_dir : str or None, default None
+        Directory holding the graph directories, instead of
+        ``<datastore root>/graph``.
+    hidden_dim_grid : int or None, default None
+        Hidden dimensionality on the grid (defaults to ``hidden_dim``).
+    time_delta_enc_dim : int or None, default None
+        Encoding dimensionality of boundary forcing time deltas (defaults
+        to ``hidden_dim``).
+    shared_grid_embedder : bool, default False
+        Use the same embedder for interior and boundary grid nodes.
+    num_quantiles : int, default 0
+        Number of quantiles to predict per output (0 for none).
+    additional_graphs : list of str, default []
+        Graphs of the additional training domains, see
+        ``DataConfig.additional_config_paths``.
     """
 
     model: str = "graph_lam"
@@ -389,6 +404,12 @@ class ModelConfig:
     m2g_gnn_type: str = "InteractionNet"
     mesh_up_gnn_type: str = "InteractionNet"
     mesh_down_gnn_type: str = "InteractionNet"
+    graph_dir: str | None = None
+    hidden_dim_grid: int | None = None
+    time_delta_enc_dim: int | None = None
+    shared_grid_embedder: bool = False
+    num_quantiles: int = 0
+    additional_graphs: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -432,6 +453,26 @@ class TrainRunConfig:
         Number of example predictions to plot during testing.
     create_gif : bool, default False
         Whether to create animation GIFs during evaluation.
+    lr_scheduler : str, default "constant"
+        ``"constant"`` or ``"linear_cosine"`` (linear warm-up followed by
+        cosine annealing to ``min_lr`` over ``epochs`` scheduler steps).
+    min_lr : float, default 0.0
+        Final learning rate of the cosine annealing.
+    lr_warmup_iters : int, default 10
+        Number of scheduler steps of linear warm-up.
+    lr_scheduler_frequency : int, default 700
+        Number of optimizer steps between scheduler steps.
+    grad_checkpointing : bool, default False
+        Use gradient checkpointing in-between unrolled steps.
+    eval_init_times : list of int, default []
+        UTC hours that validation/test forecasts are initialized at (all
+        if empty).
+    save_eval_to_zarr_path : str or None, default None
+        Save test predictions to a zarr dataset at this path.
+    plot_vars : list of str, default []
+        State variables to plot example predictions for (all if empty).
+    save_every_n_epochs : int or None, default None
+        If set, additionally keep a checkpoint every this many epochs.
     """
 
     epochs: int = 200
@@ -455,6 +496,15 @@ class TrainRunConfig:
     eval: str | None = None
     n_example_pred: int = 1
     create_gif: bool = False
+    lr_scheduler: str = "constant"
+    min_lr: float = 0.0
+    lr_warmup_iters: int = 10
+    lr_scheduler_frequency: int = 700
+    grad_checkpointing: bool = False
+    eval_init_times: list[int] = dataclasses.field(default_factory=list)
+    save_eval_to_zarr_path: str | None = None
+    plot_vars: list[str] = dataclasses.field(default_factory=list)
+    save_every_n_epochs: int | None = None
 
 
 @dataclasses.dataclass
@@ -476,6 +526,10 @@ class DataConfig:
         Number of data loader workers.
     load_single_member : bool, default False
         Whether to load only ensemble member 0.
+    dynamic_time_deltas : bool, default False
+        Compute boundary time deltas relative to the interior state times.
+    additional_config_paths : list of str, default []
+        Configs of further domains to train on together with the main one.
     """
 
     num_past_forcing_steps: int = 1
@@ -484,6 +538,8 @@ class DataConfig:
     num_future_boundary_steps: int = 1
     num_workers: int = 4
     load_single_member: bool = False
+    dynamic_time_deltas: bool = False
+    additional_config_paths: list[str] = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass
@@ -528,6 +584,8 @@ class LoggingConfig:
         Root directory for run artifacts and checkpoints.
     wandb_id : str or None, default None
         W&B run ID for resuming experiments.
+    log_level : str, default "INFO"
+        Log level of loguru.
     """
 
     logger: str = "wandb"
@@ -535,3 +593,4 @@ class LoggingConfig:
     logger_run_name: str | None = None
     runs_root: str = "runs"
     wandb_id: str | None = None
+    log_level: str = "INFO"

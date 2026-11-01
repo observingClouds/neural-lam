@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Integrate the boundary-forcing research branch (`mllam-exp-ShCu_gating_rc`) into v0.7: boundary-forced graph models with time delta encodings (`--time_delta_enc_dim`, `--dynamic_time_deltas`, `--shared_grid_embedder`), `--hidden_dim_grid`, quantile outputs (`--num_quantiles`, `crps_quantile` loss), gated features and quantile matching loss terms, excluded training intervals, `--eval_init_times`, multi-domain training (`--config_paths`/`--graph_names`), `--lr_scheduler linear_cosine`, `--grad_checkpointing`, `--save_eval_to_zarr_path`, `--plot_vars`, metric pickles, `ds_path`/`overload_stats_path`/`state_to_forcing` datastore options, forecast and ICON-grid MDP datastores, the `build_rectangular_graph`/`build_triangular_graph`/`plot_graph_globe`/`split_datastore`/`plot_val_test_metric` tools, and the experiment scripts and verification notebooks @observingClouds
+
 - Add deterministic and probabilistic forecaster/module interfaces with
   shared autoregressive unrolling and forecaster-owned training objectives.
   [\#700](https://github.com/mllam/neural-lam/pull/700) @Sir-Sloth-The-Lazy

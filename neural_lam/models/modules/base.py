@@ -3,6 +3,7 @@ forecasting modules."""
 
 # Standard library
 import os
+import pickle
 import warnings
 from abc import ABC, abstractmethod
 from typing import Any
@@ -10,9 +11,11 @@ from typing import Any
 # Third-party
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pytorch_lightning as pl
 import torch
 import xarray as xr
+from loguru import logger
 from PIL import Image
 
 # First-party
@@ -339,18 +342,100 @@ class BaseForecastingModule(pl.LightningModule, ABC):
         )
         return da
 
-    def configure_optimizers(self) -> torch.optim.Optimizer:
-        """
-        Configure the optimizers and learning rate schedulers.
+    def _run_arg(self, name: str, default: Any) -> Any:
+        """Read a run option from the ``args`` hyperparameters.
+
+        Parameters
+        ----------
+        name : str
+            Name of the option.
+        default : Any
+            Value used when ``args`` is missing or lacks the option.
 
         Returns
         -------
-        torch.optim.Optimizer
-            The configured optimizer.
+        Any
+            The option value.
+        """
+        args = self.hparams.get("args")  # ty: ignore[unresolved-attribute]
+        return getattr(args, name, default) if args is not None else default
+
+    def configure_optimizers(self) -> Any:
+        """
+        Configure the optimizers and learning rate schedulers.
+
+        With ``args.lr_scheduler == "linear_cosine"`` a linear warm-up
+        (``lr_warmup_iters`` scheduler steps) is chained with cosine annealing
+        down to ``min_lr`` over ``epochs`` scheduler steps, stepping every
+        ``lr_scheduler_frequency`` optimizer steps. Otherwise the learning
+        rate is constant.
+
+        Returns
+        -------
+        torch.optim.Optimizer or dict
+            The optimizer, or a Lightning optimizer/scheduler configuration.
         """
         lr = self.hparams.lr  # ty: ignore[unresolved-attribute]
         opt = torch.optim.AdamW(self.parameters(), lr=lr, betas=(0.9, 0.95))
-        return opt
+        if self._run_arg("lr_scheduler", "constant") != "linear_cosine":
+            return opt
+
+        warmup = torch.optim.lr_scheduler.LinearLR(
+            opt, total_iters=self._run_arg("lr_warmup_iters", 10)
+        )
+        cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt,
+            T_max=self._run_arg("epochs", 200),
+            eta_min=self._run_arg("min_lr", 0.0),
+        )
+        scheduler = torch.optim.lr_scheduler.ChainedScheduler(
+            [warmup, cosine], optimizer=opt
+        )
+        return {
+            "optimizer": opt,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": self._run_arg("lr_scheduler_frequency", 700),
+            },
+        }
+
+    def on_train_start(self) -> None:
+        """
+        When resuming, the restored cosine schedule keeps the ``T_max`` of
+        the original run; extend it to the requested number of epochs.
+        """
+        epochs = self._run_arg("epochs", None)
+        if epochs is None:
+            return
+        for config in self.trainer.lr_scheduler_configs:
+            schedulers = getattr(
+                config.scheduler, "_schedulers", [config.scheduler]
+            )
+            for sched in schedulers:
+                if (
+                    isinstance(
+                        sched, torch.optim.lr_scheduler.CosineAnnealingLR
+                    )
+                    and sched.T_max != epochs
+                ):
+                    logger.info(
+                        f"Setting cosine T_max {sched.T_max} -> {epochs}"
+                    )
+                    sched.T_max = epochs
+
+    def _current_lr(self) -> float | None:
+        """Learning rate of the first optimizer, if attached to a trainer.
+
+        Returns
+        -------
+        float or None
+            The current learning rate.
+        """
+        try:
+            return self.trainer.optimizers[0].param_groups[0]["lr"]
+        except (RuntimeError, IndexError, AttributeError):
+            return None
 
     @staticmethod
     def _safe_std(
@@ -399,7 +484,9 @@ class BaseForecastingModule(pl.LightningModule, ABC):
         Batch
             The batch with state, forcing and boundary standardized.
         """
-        init_states, target_states, forcing, boundary, batch_times = batch
+        init_states, target_states, forcing, boundary, batch_times = batch[:5]
+        # Multi-domain training batches also carry the domain index
+        extra = tuple(batch[5:])
 
         init_states = (init_states - self.state_mean) / self.state_std
         target_states = (target_states - self.state_mean) / self.state_std
@@ -435,6 +522,11 @@ class BaseForecastingModule(pl.LightningModule, ABC):
                     "BaseForecastingModule."
                 )
             assert self.boundary_std is not None
+            # Trailing time delta features (if any) are not standardized
+            num_time_delta_dims = self._num_boundary_time_delta_dims()
+            num_forcing_dims = boundary.shape[-1] - num_time_delta_dims
+            boundary_time_deltas = boundary[..., num_forcing_dims:]
+            boundary = boundary[..., :num_forcing_dims]
             if self.boundary_mean_tiled is None:
                 window_size = boundary.shape[-1] // self.boundary_mean.shape[-1]
                 self.boundary_mean_tiled = self.boundary_mean.repeat_interleave(
@@ -448,8 +540,50 @@ class BaseForecastingModule(pl.LightningModule, ABC):
             boundary = (
                 boundary - self.boundary_mean_tiled
             ) / self.boundary_std_tiled
+            boundary = torch.cat((boundary, boundary_time_deltas), dim=-1)
 
-        return init_states, target_states, forcing, boundary, batch_times
+        return (
+            init_states,
+            target_states,
+            forcing,
+            boundary,
+            batch_times,
+            *extra,
+        )  # ty: ignore[invalid-return-type]
+
+    def _num_boundary_time_delta_dims(self) -> int:
+        """Number of trailing boundary features holding time deltas.
+
+        Returns
+        -------
+        int
+            ``boundary_time_delta_dims`` of a boundary-forced predictor,
+            else 0.
+        """
+        predictor = getattr(self.forecaster, "predictor", None)
+        if getattr(predictor, "boundary_forced", False):
+            return int(predictor.boundary_time_delta_dims)
+        return 0
+
+    def _select_domain(self, batch: Batch) -> None:
+        """Switch the predictor to the domain of a multi-domain batch.
+
+        Parameters
+        ----------
+        batch : tuple
+            Batch, with the domain indices as optional sixth entry.
+        """
+        predictor = getattr(self.forecaster, "predictor", None)
+        if not hasattr(predictor, "set_domain"):
+            return
+        if len(batch) > 5:
+            domain_idx = batch[5]
+            assert bool((domain_idx == domain_idx[0]).all()), (
+                "Batches must hold samples of a single domain"
+            )
+            predictor.set_domain(int(domain_idx[0]))
+        else:
+            predictor.set_domain(0)
 
     def common_step(
         self,
@@ -481,12 +615,21 @@ class BaseForecastingModule(pl.LightningModule, ABC):
             forcing_features,
             boundary_features,
             batch_times,
-        ) = batch
-        # boundary_features is standardized here but not yet passed to the
-        # forecaster.
-        prediction, pred_std = self.forecaster(
-            init_states, forcing_features, target_states
-        )
+        ) = batch[:5]
+        self._select_domain(batch)
+        predictor = getattr(self.forecaster, "predictor", None)
+        if getattr(predictor, "boundary_forced", False):
+            prediction, pred_std = self.forecaster(
+                init_states,
+                forcing_features,
+                target_states,
+                boundary_forcing=boundary_features,
+            )
+        else:
+            # Boundary forcing is only used by boundary-forced predictors
+            prediction, pred_std = self.forecaster(
+                init_states, forcing_features, target_states
+            )
         return prediction, target_states, pred_std, batch_times
 
     def training_step(
@@ -751,13 +894,16 @@ class BaseForecastingModule(pl.LightningModule, ABC):
                 time=time_slice,
                 split=split,
                 category="state",
-            ).unstack("grid_index")
+            )
             da_target = self._create_dataarray_from_tensor(
                 tensor=target_slice,
                 time=time_slice,
                 split=split,
                 category="state",
-            ).unstack("grid_index")
+            )
+            if self.datastore.is_on_rectilinear_grid:
+                da_prediction = da_prediction.unstack("grid_index")
+                da_target = da_target.unstack("grid_index")
 
             var_vmin = (
                 torch.minimum(
@@ -776,6 +922,14 @@ class BaseForecastingModule(pl.LightningModule, ABC):
                 .numpy()
             )
             var_vranges = list(zip(var_vmin, var_vmax))
+
+            # Optionally only plot a subset of the variables
+            plot_vars = self._run_arg("plot_vars", None)
+            plot_var_names = [
+                var_name
+                for var_name in self.datastore.get_vars_names("state")
+                if not plot_vars or var_name in plot_vars
+            ]
 
             example_i = self.plotted_examples
 
@@ -812,11 +966,10 @@ class BaseForecastingModule(pl.LightningModule, ABC):
                             var_vranges,
                         )
                     )
+                    if var_name in plot_var_names
                 ]
 
-                for var_name, fig in zip(
-                    self.datastore.get_vars_names("state"), var_figs
-                ):
+                for var_name, fig in zip(plot_var_names, var_figs):
                     if isinstance(self.logger, pl.loggers.WandbLogger):
                         key = f"{var_name}_example"
                     else:
@@ -862,6 +1015,10 @@ class BaseForecastingModule(pl.LightningModule, ABC):
                             for frame in frames:
                                 frame.close()
 
+            os.makedirs(
+                self.logger.save_dir,  # ty: ignore[unresolved-attribute]
+                exist_ok=True,
+            )
             torch.save(
                 pred_slice.cpu(),
                 os.path.join(
@@ -953,6 +1110,7 @@ class BaseForecastingModule(pl.LightningModule, ABC):
             Prefix for the log names.
         """
         log_dict = {}
+        xr_data_vars: dict[str, Any] = {}
         for metric_name, metric_val_list in metrics_dict.items():
             metric_tensor = self.all_gather_cat(
                 torch.cat(metric_val_list, dim=0)
@@ -979,6 +1137,10 @@ class BaseForecastingModule(pl.LightningModule, ABC):
                     self.create_metric_log_dict(
                         metric_rescaled, prefix, metric_name
                     )
+                )
+                xr_data_vars[metric_name] = (
+                    ["variable", "lead_time"],
+                    metric_rescaled.cpu().numpy().T,
                 )
 
         figure_dict = {
@@ -1009,6 +1171,157 @@ class BaseForecastingModule(pl.LightningModule, ABC):
                     )
 
             plt.close("all")
+
+            if xr_data_vars:
+                self._save_metrics_dataset(xr_data_vars, prefix)
+
+    def _save_predictions_to_zarr(
+        self,
+        batch_times: torch.Tensor,
+        batch_predictions: torch.Tensor,
+        batch_idx: int,
+        zarr_output_path: str,
+    ) -> None:
+        """
+        Save state predictions for a single batch to a zarr dataset,
+        appending for ``batch_idx > 0``. The dataset holds a variable
+        ``state`` with coordinates ``(start_time, elapsed_forecast_duration,
+        grid_index, state_feature)``.
+
+        Parameters
+        ----------
+        batch_times : torch.Tensor
+            Shape ``(B, pred_steps)``. Target times as epoch nanoseconds.
+        batch_predictions : torch.Tensor
+            Shape ``(B, pred_steps, num_grid_nodes, num_state_vars)``.
+            Standardized predictions.
+        batch_idx : int
+            Index of the batch in the epoch.
+        zarr_output_path : str
+            Path of the zarr dataset to write.
+        """
+        # Third-party
+        import numcodecs
+
+        batch_predictions_rescaled = (
+            batch_predictions * self.state_std + self.state_mean
+        )
+        split = self._run_arg("eval", None) or "test"
+        das_pred = []
+        for i in range(len(batch_times)):
+            da_pred = self._create_dataarray_from_tensor(
+                tensor=batch_predictions_rescaled[i].float(),
+                time=batch_times[i],
+                split=split,
+                category="state",
+            )
+            # The forecast is initialized one step before the first target
+            t0 = da_pred.coords["time"].values[0] - np.timedelta64(
+                self.datastore.step_length
+            )
+            da_pred.coords["start_time"] = t0
+            da_pred.coords["elapsed_forecast_duration"] = da_pred.time - t0
+            da_pred = da_pred.swap_dims({"time": "elapsed_forecast_duration"})
+            da_pred.name = "state"
+            # MultiIndex coordinates can not be stored in zarr, keep the
+            # spatial coordinates as plain coordinates along grid_index
+            grid_index = da_pred.indexes.get("grid_index")
+            spatial_coords = {}
+            if isinstance(grid_index, pd.MultiIndex):
+                spatial_coords = {
+                    name: ("grid_index", grid_index.get_level_values(name))
+                    for name in grid_index.names
+                }
+            da_pred = xr.DataArray(
+                da_pred.transpose(
+                    "elapsed_forecast_duration", "grid_index", "state_feature"
+                ).values,
+                dims=(
+                    "elapsed_forecast_duration",
+                    "grid_index",
+                    "state_feature",
+                ),
+                coords={
+                    "elapsed_forecast_duration": da_pred[
+                        "elapsed_forecast_duration"
+                    ].values,
+                    "start_time": t0,
+                    "grid_index": np.arange(da_pred.sizes["grid_index"]),
+                    "state_feature": self.datastore.get_vars_names("state"),
+                    **spatial_coords,
+                },
+                name="state",
+            )
+            das_pred.append(da_pred)
+
+        da_pred_batch = xr.concat(das_pred, dim="start_time").chunk(
+            {"start_time": 1, "elapsed_forecast_duration": 1}
+        )
+
+        if batch_idx == 0:
+            logger.info(f"Saving predictions to {zarr_output_path}")
+            compressor = numcodecs.Blosc(
+                cname="zstd", clevel=9, shuffle=numcodecs.Blosc.SHUFFLE
+            )
+            da_pred_batch.to_zarr(
+                zarr_output_path,
+                mode="w",
+                consolidated=True,
+                zarr_format=2,
+                encoding={
+                    "start_time": {
+                        "units": "minutes since 2020-01-01T00:00:00Z",
+                        "dtype": "int64",
+                    },
+                    "state": {"compressor": compressor},
+                },
+            )
+        else:
+            da_pred_batch.to_zarr(
+                zarr_output_path, mode="a", append_dim="start_time"
+            )
+
+    def _save_metrics_dataset(
+        self, xr_data_vars: dict[str, Any], prefix: str
+    ) -> None:
+        """Save aggregated metrics as a pickled ``xr.Dataset`` with
+        dimensions ``(variable, lead_time)`` to ``<prefix>_metrics.pkl`` in
+        the logger directory.
+
+        Parameters
+        ----------
+        xr_data_vars : dict
+            Data variables of the dataset, metric name to
+            ``(dims, values)``.
+        prefix : str
+            Split prefix (``val``/``test``).
+        """
+        num_steps = next(iter(xr_data_vars.values()))[1].shape[1]
+        lead_time = (
+            np.arange(1, num_steps + 1)
+            * np.timedelta64(self.datastore.step_length)
+        ).astype("timedelta64[ns]")
+        metric_ds = xr.Dataset(
+            data_vars=xr_data_vars,
+            coords={
+                "variable": self.datastore.get_vars_names(category="state"),
+                "variable_units": (
+                    "variable",
+                    self.datastore.get_vars_units(category="state"),
+                ),
+                "variable_long_name": (
+                    "variable",
+                    self.datastore.get_vars_long_names(category="state"),
+                ),
+                "lead_time": lead_time,
+            },
+        )
+        save_dir = self.logger.save_dir  # ty: ignore[unresolved-attribute]
+        if save_dir is None:
+            return
+        os.makedirs(save_dir, exist_ok=True)
+        with open(os.path.join(save_dir, f"{prefix}_metrics.pkl"), "wb") as f:
+            pickle.dump(metric_ds, f)
 
     @abstractmethod
     def on_test_epoch_end(self) -> None:
@@ -1074,6 +1387,27 @@ class BaseForecastingModule(pl.LightningModule, ABC):
                 loaded_state_dict[new_key] = loaded_state_dict[old_key]
                 del loaded_state_dict[old_key]
 
+        # Checkpoints of the boundary-forcing research models named the grid
+        # embedder `interior_embedder`
+        for old_key in [
+            k
+            for k in loaded_state_dict
+            if k.startswith("forecaster.predictor.interior_embedder.")
+        ]:
+            new_key = old_key.replace(
+                "forecaster.predictor.interior_embedder.",
+                "forecaster.predictor.grid_embedder.",
+            )
+            loaded_state_dict[new_key] = loaded_state_dict.pop(old_key)
+
         if not self.restore_opt:
-            opt = self.configure_optimizers()
+            opt_config = self.configure_optimizers()
+            if isinstance(opt_config, dict):
+                opt = opt_config["optimizer"]
+                checkpoint["lr_schedulers"] = [
+                    opt_config["lr_scheduler"]["scheduler"].state_dict()
+                ]
+            else:
+                opt = opt_config
+                checkpoint["lr_schedulers"] = []
             checkpoint["optimizer_states"] = [opt.state_dict()]

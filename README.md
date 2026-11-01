@@ -475,6 +475,26 @@ Run `python -m neural_lam.create_graph_with_wmg --help` for the full list of
 options (e.g. `--mesh_node_distance`, `--mesh_grid_distance_ratio`,
 `--level_refinement_factor`, `--max_num_levels`).
 
+### Graphs with boundary nodes and triangular graphs
+
+When the neural-lam config contains a separate boundary datastore, the
+graph must also connect the boundary grid nodes to the mesh. Grid nodes are
+then ordered with the interior nodes first and the boundary nodes last; all of
+them send to the mesh, but the mesh only decodes to the interior.
+
+* Rectangular graphs (built with weather-model-graphs):
+  `python -m neural_lam.build_rectangular_graph --config_path <config> --graph_name <name> --archetype hierarchical --mesh_node_distance <distance in projection units>`
+* Triangular (icosahedral) graphs, requiring the `graph` extra
+  (`uv sync --extra graph`):
+  `python -m neural_lam.build_triangular_graph --config_path <config> --graph_name <name> --hierarchical --splits 9 --levels 3`
+
+Graphs are saved under `<datastore root>/graph/<name>` unless `--output_dir`
+(rectangular) or `--save_dir` (triangular) is given; pass the same directory
+to training with `--graph_dir`. Graphs can be inspected in 3D on the globe with
+`python -m neural_lam.plot_graph_globe --config_path <config> --graph_name <name> --save graph.html`.
+Graph directories written by earlier versions of these builders (with
+`m2m_node_features.pt`) can still be loaded.
+
 ## Logging your experiments
 
 ### Weights & Biases Integration
@@ -586,6 +606,66 @@ When using on a system without SLURM, where all GPU's are visible, it is possibl
 
 > **DGX Spark / container compatibility:** see [issue #163](https://github.com/mllam/neural-lam/issues/163) for a list of currently known-working and known-failing PyTorch / CUDA / container combinations on DGX Spark.
 
+### Boundary forcing and further training options
+
+With a separate boundary datastore (a datastore without `state` data under
+`datastores:` in the config), the graph models (`graph_lam`, `hi_lam`,
+`hi_lam_parallel`) are forced by the boundary data: the windowed boundary
+forcing, together with sinusoidal encodings of the time between each boundary
+time and the interior time, is embedded on the boundary grid nodes and encoded
+to the mesh together with the interior. The whole interior is predicted (the
+interior datastore defaults to `n_boundary_points: 0`). Related options:
+
+* `--num_past_boundary_steps` / `--num_future_boundary_steps`: boundary window
+* `--time_delta_enc_dim`: dimensionality of the time delta encoding
+* `--dynamic_time_deltas`: time deltas relative to the interior state times
+* `--shared_grid_embedder`: same embedder for interior and boundary nodes
+* `--hidden_dim_grid`: separate hidden dimensionality on the grid
+
+Further options:
+
+* `--lr_scheduler linear_cosine` (with `--min_lr`, `--lr_warmup_iters`,
+  `--lr_scheduler_frequency`): linear warm-up followed by cosine annealing,
+  extended to `--epochs` when resuming
+* `--grad_checkpointing`: gradient checkpointing in-between unrolled steps
+* `--num_quantiles` with `--loss crps_quantile`: predict quantiles
+* `--save_every_n_epochs`: additionally keep checkpoints every n epochs
+* `--config_paths <config 1> <config 2> --graph_names <graph 1> <graph 2>`:
+  train on several domains together (validation and testing use the first)
+* `--log_level`: log level of loguru
+
+and options in the `training` section of the neural-lam config:
+
+```yaml
+training:
+  output_clamping:
+    # Gate the increment of these features with a learned probability of
+    # exceeding a threshold (default physical zero), adding a BCE loss term
+    gated_features: [precipitation]
+    gate_thresholds:
+      precipitation: 0.1
+  # Match the spatial value distribution of features (sorted MSE term)
+  quantile_matching:
+    weights:
+      precipitation: 1.0
+  # Do not train on samples overlapping these intervals
+  excluded_intervals:
+    - ["2002-11-19T00", "2002-11-19T06"]
+```
+
+A datastore entry under `datastores:` additionally takes `ds_path` (explicit
+zarr path, or a kerchunk reference `.json` for virtual datasets),
+`overload_stats_path` (use the standardization statistics of another mdp
+datastore) and `state_to_forcing` (state features given as forcing instead of
+being predicted). MDP datastores of forecast data (with
+`elapsed_forecast_duration`) and ICON-style grids (`clat`/`clon` in radians)
+are supported.
+
+The `scripts` directory contains the configs and scripts used for the
+DANRA and COSMO experiments of *Building Machine Learning Limited Area
+Models: Kilometer-Scale Weather Forecasting in Realistic Settings*, and
+`verification` the corresponding verification notebooks.
+
 ## Evaluate Models
 Evaluation is also done using `python -m neural_lam.train_model --config_path <config-path>`, but using the `--eval` option.
 Use `--eval val` to evaluate the model on the validation set and `--eval test` to evaluate on test data.
@@ -595,6 +675,15 @@ Some options specifically important for evaluation are:
 * `--load`: Path to model checkpoint file (`.ckpt`) to load parameters from
 * `--n_example_pred`: Number of example predictions to plot during evaluation.
 * `--ar_steps_eval`: Number of time steps to unroll for during evaluation
+* `--eval_init_times`: Only evaluate forecasts initialized at these UTC hours, e.g. `--eval_init_times 0 12`
+* `--save_eval_to_zarr_path`: Save all test forecasts to a zarr dataset
+* `--plot_vars`: Only plot example predictions for these variables
+
+Metrics are also saved as a pickled `xarray.Dataset` (`<split>_metrics.pkl`)
+in the run directory, see `neural_lam.plot_val_test_metric` for plotting
+several runs together. When evaluating a checkpoint stored in
+`<runs_root>/<run>/checkpoints/` without `--logger_run_name`, outputs go to
+`<runs_root>/<run>-eval`.
 
 **Note:** While it is technically possible to use multiple GPUs for running evaluation, this is strongly discouraged. If using multiple devices the `DistributedSampler` will replicate some samples to make sure all devices have the same batch size, meaning that evaluation metrics will be unreliable.
 A possible workaround is to just use batch size 1 during evaluation.

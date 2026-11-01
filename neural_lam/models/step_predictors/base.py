@@ -119,6 +119,11 @@ class StepPredictor(nn.Module, ABC):
 
         (self.num_grid_nodes, _) = self.grid_static_features.shape
 
+        # Whether the predictor takes boundary forcing as input
+        self.boundary_forced = False
+        # Auxiliary outputs of the last forward call, e.g. gate logits
+        self.step_aux: dict[str, torch.Tensor] = {}
+
     @property
     def predicts_std(self) -> bool:
         """
@@ -151,12 +156,25 @@ class StepPredictor(nn.Module, ABC):
         """
         return x.unsqueeze(0).expand(batch_size, -1, -1)
 
+    @property
+    def predicts_quantiles(self) -> bool:
+        """
+        Whether the predictor outputs quantiles (in place of a std.).
+
+        Returns
+        -------
+        bool
+            ``False`` unless overridden.
+        """
+        return False
+
     @abstractmethod
     def forward(
         self,
         prev_state: torch.Tensor,
         prev_prev_state: torch.Tensor,
         forcing: torch.Tensor,
+        boundary_forcing: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Advance the state by one step:

@@ -116,7 +116,11 @@ class DeterministicForecastingModule(BaseForecastingModule):
             "mse": [],
             "mae": [],
         }
-        if self.forecaster.predicts_std:
+        if self.forecaster.predicts_std and not getattr(
+            getattr(self.forecaster, "predictor", None),
+            "predicts_quantiles",
+            False,
+        ):
             self.test_metrics["output_std"] = []  # Treat as metric
 
         # For storing spatial loss maps during evaluation
@@ -147,16 +151,95 @@ class DeterministicForecastingModule(BaseForecastingModule):
         torch.Tensor
             The computed loss for the training step.
         """
-        _, _, _, time_step_loss = self._compute_prediction_and_loss(batch)
+        prediction, target_states, _, time_step_loss = (
+            self._compute_prediction_and_loss(batch, phase="train")
+        )
         batch_loss = torch.mean(time_step_loss)
         self._log_step_loss(
             time_step_loss, batch_loss, "train", batch[0].shape[0]
         )
+        self._log_variable_rmse(
+            prediction, target_states, "train", batch[0].shape[0]
+        )
         return batch_loss
+
+    def _interior_mask_for(
+        self, prediction: torch.Tensor
+    ) -> torch.Tensor | None:
+        """Interior mask matching the grid of ``prediction``.
+
+        Parameters
+        ----------
+        prediction : torch.Tensor
+            Shape ``(..., num_grid_nodes, num_state_vars)``.
+
+        Returns
+        -------
+        torch.Tensor or None
+            The interior mask, or ``None`` (all nodes) for another domain's
+            grid when the first domain has no boundary nodes.
+
+        Raises
+        ------
+        ValueError
+            If the grids differ and the first domain has boundary nodes.
+        """
+        mask = self.interior_mask_bool
+        if mask.shape[0] == prediction.shape[-2]:
+            return mask
+        if bool(mask.all()):
+            return None
+        raise ValueError(
+            "The interior mask does not match the number of grid nodes."
+        )
+
+    def _log_variable_rmse(
+        self,
+        prediction: torch.Tensor,
+        target_states: torch.Tensor,
+        phase: str,
+        batch_size: int,
+    ) -> None:
+        """Log the RMSE of each state variable at the first prediction step
+        (in standardized units) as ``{phase}_rmse_{var}``, and the learning
+        rate as ``{phase}_lr``.
+
+        Parameters
+        ----------
+        prediction, target_states : torch.Tensor
+            Shape ``(B, pred_steps, num_grid_nodes, num_state_vars)``.
+        phase : str
+            ``train`` or ``val``.
+        batch_size : int
+            Batch size for logging.
+        """
+        entry_mses = metrics.mse(
+            prediction[:, :1],
+            target_states[:, :1],
+            mask=self._interior_mask_for(prediction),
+            sum_vars=False,
+        )  # (B, 1, num_state_vars)
+        mean_rmse = torch.mean(torch.sqrt(entry_mses[:, 0]), dim=0)
+        log_dict = {
+            f"{phase}_rmse_{var}": mean_rmse[i]
+            for i, var in enumerate(self.datastore.get_vars_names("state"))
+        }
+        lr = self._current_lr()
+        if lr is not None:
+            log_dict[f"{phase}_lr"] = lr
+        is_train = phase == "train"
+        self.log_dict(
+            log_dict,
+            on_step=is_train,
+            on_epoch=True,
+            sync_dist=True,
+            batch_size=batch_size,
+        )
 
     def _compute_prediction_and_loss(
         self,
         batch: Batch,
+        phase: str | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
         """
         Compute predicted mean, standard deviation, and step-wise loss.
@@ -172,6 +255,9 @@ class DeterministicForecastingModule(BaseForecastingModule):
         ----------
         batch : tuple of torch.Tensor
             The batch of data.
+        phase : str, optional
+            If given, additional loss components (e.g. quantile matching)
+            are logged with this prefix.
 
         Returns
         -------
@@ -218,12 +304,13 @@ class DeterministicForecastingModule(BaseForecastingModule):
             The index of the batch.
         """
         prediction, target_states, pred_std, time_step_loss = (
-            self._compute_prediction_and_loss(batch)
+            self._compute_prediction_and_loss(batch, phase="val")
         )
 
         mean_loss = torch.mean(time_step_loss)
         batch_size = batch[0].shape[0]
         self._log_step_loss(time_step_loss, mean_loss, "val", batch_size)
+        self._log_variable_rmse(prediction, target_states, "val", batch_size)
 
         # Reported independently of the training objective, so computed here
         # rather than through the forecaster
@@ -255,7 +342,9 @@ class DeterministicForecastingModule(BaseForecastingModule):
             self._compute_prediction_and_loss(batch)
         )
 
-        if pred_std is not None:
+        if pred_std is not None and not getattr(
+            self.forecaster.predictor, "predicts_quantiles", False
+        ):
             mean_pred_std = torch.mean(
                 pred_std[..., self.interior_mask_bool, :], dim=-2
             )
@@ -292,6 +381,15 @@ class DeterministicForecastingModule(BaseForecastingModule):
             :, [step - 1 for step in self._test_spatial_steps]
         ]
         self.spatial_loss_maps.append(log_spatial_losses)
+
+        zarr_output_path = self._run_arg("save_eval_to_zarr_path", None)
+        if zarr_output_path:
+            self._save_predictions_to_zarr(
+                batch_times=batch[4],
+                batch_predictions=prediction,
+                batch_idx=batch_idx,
+                zarr_output_path=zarr_output_path,
+            )
 
         if (
             self.trainer.is_global_zero

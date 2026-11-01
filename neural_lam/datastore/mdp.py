@@ -502,9 +502,7 @@ class MDPDatastore(BaseDatastore):
             da_split = self._split_bounds(split)
             t_start = da_split.sel(split_part="start").load().item()
             t_end = da_split.sel(split_part="end").load().item()
-            da_category = da_category.sel(
-                {temporal_dim: slice(t_start, t_end)}
-            )
+            da_category = da_category.sel({temporal_dim: slice(t_start, t_end)})
 
         dim_order = self.expected_dim_order(category=category)
         da_category = da_category.transpose(*dim_order)

@@ -64,6 +64,7 @@ class PersistencePredictor(StepPredictor):
         prev_state: torch.Tensor,
         prev_prev_state: torch.Tensor,
         forcing: torch.Tensor,
+        boundary_forcing: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, None]:
         """
         Return the previous state as the prediction.
@@ -79,6 +80,8 @@ class PersistencePredictor(StepPredictor):
         forcing : torch.Tensor
             Shape ``(B, num_grid_nodes, num_forcing_vars)``.
             External forcings (unused).
+        boundary_forcing : torch.Tensor, optional
+            Boundary forcing (unused).
 
         Returns
         -------

@@ -1,14 +1,28 @@
+"""Build rectangular graphs with weather-model-graphs for interior and
+(optional) boundary grid nodes.
+
+Grid nodes are ordered with the interior nodes first and the boundary nodes
+(from a separate boundary datastore) last. All grid nodes send to the mesh,
+but the mesh only decodes to the interior nodes. Graphs are saved in the
+neural-lam graph storage format (see ``docs/graph_storage_spec.md``).
+"""
+
 # Standard library
 import argparse
 import os
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
 
 # Third-party
 import cartopy.crs as ccrs
 import weather_model_graphs as wmg
+from loguru import logger
 
 # Local
 from . import utils
-from .config import load_config_and_datastores
+from .config import load_config_and_datastore
+from .datastore.base import BaseDatastore
 
 WMG_ARCHETYPES = {
     "keisler": wmg.create.archetype.create_keisler_graph,
@@ -17,9 +31,14 @@ WMG_ARCHETYPES = {
 }
 
 
-def main(input_args=None):
+def main(input_args: list[str] | None = None) -> None:
     """
     Build rectangular graph from archetype, using cmd-line arguments.
+
+    Parameters
+    ----------
+    input_args : list of str, optional
+        Arguments to parse instead of ``sys.argv``.
     """
     parser = argparse.ArgumentParser(
         description="Rectangular graph generation using weather-models-graph",
@@ -30,18 +49,20 @@ def main(input_args=None):
     parser.add_argument(
         "--config_path",
         type=str,
+        required=True,
         help="Path to the configuration for neural-lam",
     )
     parser.add_argument(
         "--graph_name",
         type=str,
-        help="Name to save graph as (default: multiscale)",
+        required=True,
+        help="Name to save graph as",
     )
     parser.add_argument(
         "--output_dir",
         type=str,
-        default="graphs",
-        help="Directory to save graph to",
+        default=None,
+        help="Directory to save graph to (default: <datastore root>/graph)",
     )
 
     # Graph structure
@@ -49,14 +70,15 @@ def main(input_args=None):
         "--archetype",
         type=str,
         default="keisler",
-        help="Archetype to use to create graph "
-        "(keisler/graphcast/hierarchical)",
+        choices=list(WMG_ARCHETYPES),
+        help="Archetype to use to create graph",
     )
     parser.add_argument(
         "--mesh_node_distance",
         type=float,
         default=3.0,
-        help="Distance between created mesh nodes",
+        help="Distance between created mesh nodes, in the coordinates of "
+        "the projection of the interior datastore",
     )
     parser.add_argument(
         "--level_refinement_factor",
@@ -68,26 +90,17 @@ def main(input_args=None):
     parser.add_argument(
         "--max_num_levels",
         type=int,
-        help="Limit multi-scale mesh to given number of levels, "
-        "from bottom up",
+        help="Limit multi-scale mesh to given number of levels, from bottom up",
     )
     args = parser.parse_args(input_args)
 
-    assert (
-        args.config_path is not None
-    ), "Specify your config with --config_path"
-    assert (
-        args.graph_name is not None
-    ), "Specify the name to save graph as with --graph_name"
-
-    _, datastore, datastore_boundary = load_config_and_datastores(
+    _, datastore, datastore_boundary = load_config_and_datastore(
         config_path=args.config_path
     )
 
-    create_kwargs = {
+    create_kwargs: dict[str, Any] = {
         "mesh_node_distance": args.mesh_node_distance,
     }
-
     if args.archetype != "keisler":
         # Add additional multi-level kwargs
         create_kwargs.update(
@@ -97,47 +110,55 @@ def main(input_args=None):
             }
         )
 
-    return build_graph_from_archetype(
+    build_graph_from_archetype(
         datastore=datastore,
         datastore_boundary=datastore_boundary,
         graph_name=args.graph_name,
         archetype=args.archetype,
+        dir_save_path=args.output_dir,
         **create_kwargs,
     )
 
 
 def _build_wmg_graph(
-    datastore,
-    datastore_boundary,
-    graph_build_func,
-    kwargs,
-    graph_name,
-    dir_save_path=None,
-):
+    datastore: BaseDatastore,
+    datastore_boundary: BaseDatastore | None,
+    graph_build_func: Callable[..., Any],
+    kwargs: dict[str, Any],
+    graph_name: str,
+    dir_save_path: str | Path | None = None,
+    hierarchical: bool = False,
+) -> None:
     """
     Build a graph using WMG in a way that's compatible with neural-lam.
     Given datastores are used for coordinates and decode masking.
-    The given graph building function from WMG should be used, with kwargs.
 
     Parameters
     ----------
     datastore : BaseDatastore
-        Datastore representing interior region of grid
+        Datastore representing interior region of grid.
     datastore_boundary : BaseDatastore or None
-        Datastore representing boundary region, or None if no boundary forcing
-    graph_build_func
-        Function from WMG to use to build graph
+        Datastore representing boundary region, or None if no boundary
+        forcing.
+    graph_build_func : callable
+        Function from WMG to use to build graph.
     kwargs : dict
-        Keyword arguments to feed to graph_build_func. Should not include
+        Keyword arguments to feed to ``graph_build_func``. Should not include
         coords, coords_crs, graph_crs, return_components or decode_mask, as
         these are here derived in a consistent way from the datastores.
     graph_name : str
         Name to save the graph as.
-    dir_save_path : str or None
-        Path to directory where graph should be saved, in directory graph_name.
-        If None, save in "graphs" directory in the root directory of datastore.
-    """
+    dir_save_path : str or Path, optional
+        Directory in which the graph directory ``graph_name`` is created.
+        If None, ``<datastore.root_path>/graph`` is used.
+    hierarchical : bool, optional
+        Whether the built graph is hierarchical.
 
+    Raises
+    ------
+    ValueError
+        If any of the derived arguments is given in ``kwargs``.
+    """
     for derived_kwarg in (
         "coords",
         "coords_crs",
@@ -145,177 +166,136 @@ def _build_wmg_graph(
         "return_components",
         "decode_mask",
     ):
-        assert derived_kwarg not in kwargs, (
-            f"Argument {derived_kwarg} should not be manually given when "
-            "building rectangular graph."
-        )
+        if derived_kwarg in kwargs:
+            raise ValueError(
+                f"Argument {derived_kwarg} should not be manually given when "
+                "building rectangular graph."
+            )
 
-    # Load grid positions
+    # Lon-lat positions of all grid nodes, (num_nodes_full, 2)
     coords = utils.get_stacked_lat_lons(datastore, datastore_boundary)
-    # (num_nodes_full, 2)
-    # Project using crs from datastore for graph building
-    coords_crs = ccrs.PlateCarree()
-    graph_crs = datastore.coords_projection
 
-    if datastore_boundary is None:
-        # No mask
-        decode_mask = None
-    else:
-        # Construct mask to decode only to interior
-        decode_mask = utils.get_interior_mask(datastore, datastore_boundary)
+    # Only decode to the interior if there is a boundary
+    decode_mask = (
+        None
+        if datastore_boundary is None
+        else utils.get_interior_mask(datastore, datastore_boundary)
+    )
 
-    # Set up all kwargs
     create_kwargs = {
         "coords": coords,
         "decode_mask": decode_mask,
-        "graph_crs": graph_crs,
-        "coords_crs": coords_crs,
+        # Project to the crs of the interior datastore for graph building
+        "graph_crs": datastore.coords_projection,
+        "coords_crs": ccrs.PlateCarree(),
         "return_components": True,
     }
     create_kwargs.update(kwargs)
 
-    # Build graph
     graph_comp = graph_build_func(**create_kwargs)
 
-    print("Created graph:")
+    logger.info("Created graph:")
     for name, subgraph in graph_comp.items():
-        print(f"{name}: {subgraph}")
+        logger.info(f"{name}: {subgraph}")
 
-    # Need to know if hierarchical for saving
-    hierarchical = (graph_build_func == WMG_ARCHETYPES["hierarchical"]) or (
-        "m2m_connectivity" in kwargs
-        and kwargs["m2m_connectivity"] == "hierarchical"
+    graph_root = (
+        Path(dir_save_path)
+        if dir_save_path is not None
+        else Path(datastore.root_path) / "graph"
     )
-
-    # Save graph
-    if dir_save_path is None:
-        graph_dir_path = os.path.join(datastore.root_path, "graphs", graph_name)
-    else:
-        graph_dir_path = os.path.join(dir_save_path, graph_name)
-
+    graph_dir_path = graph_root / graph_name
     os.makedirs(graph_dir_path, exist_ok=True)
-    for component, graph in graph_comp.items():
-        # This seems like a bit of a hack, maybe better if saving in wmg
-        # was made consistent with nl
-        if component == "m2m":
-            if hierarchical:
-                # Split by direction
-                m2m_direction_comp = wmg.split_graph_by_edge_attribute(
-                    graph, attr="direction"
-                )
-                for direction, dir_graph in m2m_direction_comp.items():
-                    if direction == "same":
-                        # Name just m2m to be consistent with non-hierarchical
-                        wmg.save.to_pyg(
-                            graph=dir_graph,
-                            name="m2m",
-                            list_from_attribute="level",
-                            edge_features=["len", "vdiff"],
-                            output_directory=graph_dir_path,
-                        )
-                    else:
-                        # up and down directions
-                        wmg.save.to_pyg(
-                            graph=dir_graph,
-                            name=f"mesh_{direction}",
-                            list_from_attribute="levels",
-                            edge_features=["len", "vdiff"],
-                            output_directory=graph_dir_path,
-                        )
-            else:
-                wmg.save.to_pyg(
-                    graph=graph,
-                    name=component,
-                    list_from_attribute="dummy",  # Note: Needed to output list
-                    edge_features=["len", "vdiff"],
-                    output_directory=graph_dir_path,
-                )
-        else:
-            wmg.save.to_pyg(
-                graph=graph,
-                name=component,
-                edge_features=["len", "vdiff"],
-                output_directory=graph_dir_path,
-            )
+    wmg.save.to_torch_tensors_on_disk(
+        graph_components=graph_comp,
+        output_directory=str(graph_dir_path),
+        hierarchical=hierarchical,
+    )
+    logger.info(f"Saved graph to {graph_dir_path}")
 
 
 def build_graph_from_archetype(
-    datastore,
-    datastore_boundary,
-    graph_name,
-    archetype,
-    dir_save_path=None,
-    **kwargs,
-):
+    datastore: BaseDatastore,
+    datastore_boundary: BaseDatastore | None,
+    graph_name: str,
+    archetype: str,
+    dir_save_path: str | Path | None = None,
+    **kwargs: Any,
+) -> None:
     """
-    Function that builds graph using wmg archetype.
-    Uses archetype functions from wmg.create.archetype with kwargs being passed
-    on directly to those functions.
+    Build a graph using a wmg archetype. Keyword arguments are passed on
+    directly to the archetype function.
 
     Parameters
     ----------
     datastore : BaseDatastore
-        Datastore representing interior region of grid
+        Datastore representing interior region of grid.
     datastore_boundary : BaseDatastore or None
-        Datastore representing boundary region, or None if no boundary forcing
+        Datastore representing boundary region, or None if no boundary
+        forcing.
     graph_name : str
         Name to save the graph as.
     archetype : str
-        Archetype to build. Must be one of "keisler", "graphcast"
-        or "hierarchical"
-    dir_save_path : str or None
-        Path to directory where graph should be saved, in directory graph_name.
-        If None, save in "graphs" directory in the root directory of datastore.
+        Archetype to build, one of "keisler", "graphcast" or "hierarchical".
+    dir_save_path : str or Path, optional
+        Directory in which the graph directory ``graph_name`` is created.
+        If None, ``<datastore.root_path>/graph`` is used.
     **kwargs
-        Keyword arguments that are passed on to
-        wmg.create.base.create_all_graph_components. See WMG for accepted
-        values for these.
+        Keyword arguments passed on to the wmg archetype function.
+
+    Raises
+    ------
+    ValueError
+        If the archetype is unknown.
     """
+    if archetype not in WMG_ARCHETYPES:
+        raise ValueError(f"Unknown archetype: {archetype}")
 
-    assert archetype in WMG_ARCHETYPES, f"Unknown archetype: {archetype}"
-    archetype_create_func = WMG_ARCHETYPES[archetype]
-
-    return _build_wmg_graph(
+    _build_wmg_graph(
         datastore=datastore,
         datastore_boundary=datastore_boundary,
-        graph_build_func=archetype_create_func,
+        graph_build_func=WMG_ARCHETYPES[archetype],
         graph_name=graph_name,
         dir_save_path=dir_save_path,
         kwargs=kwargs,
+        hierarchical=archetype == "hierarchical",
     )
 
 
 def build_graph(
-    datastore, datastore_boundary, graph_name, dir_save_path=None, **kwargs
-):
+    datastore: BaseDatastore,
+    datastore_boundary: BaseDatastore | None,
+    graph_name: str,
+    dir_save_path: str | Path | None = None,
+    **kwargs: Any,
+) -> None:
     """
-    Function that can be used for more fine-grained control of graph
-    construction. Directly uses wmg.create.base.create_all_graph_components,
-    with kwargs being passed on directly to there.
+    Build a graph with fine-grained control, directly using
+    ``wmg.create.base.create_all_graph_components`` with the given kwargs.
 
     Parameters
     ----------
     datastore : BaseDatastore
-        Datastore representing interior region of grid
+        Datastore representing interior region of grid.
     datastore_boundary : BaseDatastore or None
-        Datastore representing boundary region, or None if no boundary forcing
+        Datastore representing boundary region, or None if no boundary
+        forcing.
     graph_name : str
         Name to save the graph as.
-    dir_save_path : str or None
-        Path to directory where graph should be saved, in directory graph_name.
-        If None, save in "graphs" directory in the root directory of datastore.
+    dir_save_path : str or Path, optional
+        Directory in which the graph directory ``graph_name`` is created.
+        If None, ``<datastore.root_path>/graph`` is used.
     **kwargs
-        Keyword arguments that are passed on to
-        wmg.create.base.create_all_graph_components. See WMG for accepted
-        values for these.
+        Keyword arguments passed on to
+        ``wmg.create.base.create_all_graph_components``.
     """
-    return _build_wmg_graph(
+    _build_wmg_graph(
         datastore=datastore,
         datastore_boundary=datastore_boundary,
         graph_build_func=wmg.create.base.create_all_graph_components,
         graph_name=graph_name,
         dir_save_path=dir_save_path,
         kwargs=kwargs,
+        hierarchical=kwargs.get("m2m_connectivity") == "hierarchical",
     )
 
 

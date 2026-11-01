@@ -2,10 +2,13 @@
 
 # Standard library
 import dataclasses
+import faulthandler
 import json
 import os
 import random
 import shutil
+import signal
+import sys
 import time
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, Namespace
 from pathlib import Path
@@ -29,6 +32,7 @@ from .config import (
     ModelConfig,
     NeuralLAMConfig,
     OutputClamping,
+    QuantileMatching,
     TrainingConfig,
     TrainRunConfig,
     UniformFeatureWeighting,
@@ -38,11 +42,15 @@ from .datastore.base import BaseDatastore
 from .gnn_layers import GNN_TYPES
 from .models import (
     MODELS,
+    BaseGraphModel,
     BaseHiGraphModel,
     DeterministicARForecaster,
     DeterministicForecastingModule,
 )
 from .weather_dataset import WeatherDataModule
+
+# Models taking graph-specific options (e.g. boundary forcing)
+GRAPH_MODELS = ("graph_lam", "hi_lam", "hi_lam_parallel")
 
 if hasattr(torch.serialization, "add_safe_globals"):
     torch.serialization.add_safe_globals(
@@ -52,6 +60,7 @@ if hasattr(torch.serialization, "add_safe_globals"):
             ManualStateFeatureWeighting,
             NeuralLAMConfig,
             OutputClamping,
+            QuantileMatching,
             TrainingConfig,
             UniformFeatureWeighting,
         ]
@@ -90,6 +99,10 @@ def build_predictor(
     args: Namespace,
     config: NeuralLAMConfig,
     datastore: BaseDatastore,
+    datastore_boundary: BaseDatastore | None = None,
+    additional_domains: (
+        list[tuple[BaseDatastore, BaseDatastore | None, str]] | None
+    ) = None,
 ) -> Any:
     """
     Instantiate a step predictor with the GNN kwargs its family accepts.
@@ -98,7 +111,8 @@ def build_predictor(
     subclasses, gating on the class hierarchy so that future hierarchical
     models are covered without maintaining a model-name list. GNN type
     arguments fall back to ``InteractionNet`` for checkpoints saved before
-    those CLI flags existed.
+    those CLI flags existed. Graph models are boundary-forced when a
+    ``datastore_boundary`` is given.
     """
     kwargs = dict(
         datastore=datastore,
@@ -121,6 +135,23 @@ def build_predictor(
         )
         kwargs["mesh_down_gnn_type"] = getattr(
             args, "mesh_down_gnn_type", "InteractionNet"
+        )
+    if issubclass(predictor_class, BaseGraphModel):
+        output_clamping = config.training.output_clamping
+        kwargs.update(
+            datastore_boundary=datastore_boundary,
+            num_past_boundary_steps=getattr(args, "num_past_boundary_steps", 1),
+            num_future_boundary_steps=getattr(
+                args, "num_future_boundary_steps", 1
+            ),
+            hidden_dim_grid=getattr(args, "hidden_dim_grid", None),
+            time_delta_enc_dim=getattr(args, "time_delta_enc_dim", None),
+            shared_grid_embedder=getattr(args, "shared_grid_embedder", False),
+            num_quantiles=getattr(args, "num_quantiles", 0),
+            gated_features=output_clamping.gated_features,
+            gate_thresholds=output_clamping.gate_thresholds,
+            graph_dir=getattr(args, "graph_dir", None),
+            additional_domains=additional_domains,
         )
     return predictor_class(**kwargs)
 
@@ -174,9 +205,15 @@ def load_forecasting_module_from_checkpoint(
     ckpt = torch.load(ckpt_path, weights_only=False)
     args = ckpt["hyper_parameters"]["args"]
     predictor_class = MODELS[args.model]
-    predictor = build_predictor(predictor_class, args, config, datastore)
+    predictor = build_predictor(
+        predictor_class, args, config, datastore, datastore_boundary
+    )
     forecaster = DeterministicARForecaster(
-        predictor, datastore, config=config, loss=args.loss
+        predictor,
+        datastore,
+        config=config,
+        loss=args.loss,
+        grad_checkpointing=getattr(args, "grad_checkpointing", False),
     )
     return DeterministicForecastingModule.load_from_checkpoint(
         ckpt_path,
@@ -206,8 +243,17 @@ def build_parser() -> ArgumentParser:
     core_group.add_argument(
         "--config_path",
         type=str,
-        help="Path to the configuration for neural-lam",
-        required=True,
+        help="Path to the configuration for neural-lam (required unless "
+        "--config_paths is given)",
+    )
+    core_group.add_argument(
+        "--config_paths",
+        nargs="+",
+        type=str,
+        default=None,
+        help="Paths to the configurations of several domains to train on "
+        "together, paired with --graph_names. The first one is used for "
+        "validation and testing.",
     )
     core_group.add_argument(
         "--model",
@@ -508,6 +554,120 @@ def build_parser() -> ArgumentParser:
             "ensemble members as independent samples."
         ),
     )
+    # Options from the boundary-forcing research branch
+    arch_group.add_argument(
+        "--graph_names",
+        nargs="+",
+        type=str,
+        default=None,
+        help="Graphs of the domains given by --config_paths, in the same order",
+    )
+    arch_group.add_argument(
+        "--graph_dir",
+        type=str,
+        default=None,
+        help="Root directory containing graph directories "
+        "(default: <datastore root>/graph)",
+    )
+    arch_group.add_argument(
+        "--hidden_dim_grid",
+        type=int,
+        default=None,
+        help="Dimensionality of hidden representations related to grid "
+        "nodes (grid encodings and grid-level MLPs). Default: hidden_dim",
+    )
+    arch_group.add_argument(
+        "--num_quantiles",
+        type=int,
+        default=0,
+        help="Number of quantiles to predict per output dimension, use "
+        "with --loss crps_quantile (0: no quantiles)",
+    )
+    arch_group.add_argument(
+        "--shared_grid_embedder",
+        action="store_true",
+        help="Use the same embedder MLP for interior and boundary grid "
+        "nodes, requiring the same input dimensionality for both",
+    )
+    arch_group.add_argument(
+        "--time_delta_enc_dim",
+        type=int,
+        default=None,
+        help="Dimensionality of the positional encoding of boundary forcing "
+        "time deltas, must be even. Default: hidden_dim",
+    )
+    data_group.add_argument(
+        "--dynamic_time_deltas",
+        action="store_true",
+        help="Compute the boundary time deltas relative to the interior "
+        "state times instead of the matched boundary times",
+    )
+    train_group.add_argument(
+        "--lr_scheduler",
+        type=str,
+        default="constant",
+        choices=["constant", "linear_cosine"],
+        help="Learning rate schedule. linear_cosine chains a linear warm-up "
+        "with cosine annealing over --epochs scheduler steps",
+    )
+    train_group.add_argument(
+        "--min_lr",
+        type=float,
+        default=0.0,
+        help="Minimum learning rate of the cosine annealing",
+    )
+    train_group.add_argument(
+        "--lr_warmup_iters",
+        type=int,
+        default=10,
+        help="Number of scheduler steps of linear warm-up (linear_cosine)",
+    )
+    train_group.add_argument(
+        "--lr_scheduler_frequency",
+        type=int,
+        default=700,
+        help="Number of optimizer steps between learning rate scheduler "
+        "steps (linear_cosine)",
+    )
+    train_group.add_argument(
+        "--grad_checkpointing",
+        action="store_true",
+        help="Use gradient checkpointing in-between each unrolling step",
+    )
+    train_group.add_argument(
+        "--save_every_n_epochs",
+        type=int,
+        default=None,
+        help="Additionally keep a checkpoint every this many epochs",
+    )
+    eval_group.add_argument(
+        "--eval_init_times",
+        nargs="*",
+        type=int,
+        default=[],
+        help="UTC hours that validation and evaluation forecasts are "
+        "started from, e.g. '0 12' (default: all)",
+    )
+    eval_group.add_argument(
+        "--save_eval_to_zarr_path",
+        type=str,
+        default=None,
+        help="Save evaluation predictions to a zarr dataset at this path",
+    )
+    eval_group.add_argument(
+        "--plot_vars",
+        nargs="+",
+        type=str,
+        default=[],
+        help="State variables to plot example predictions for (default: all)",
+    )
+    logger_group.add_argument(
+        "--log_level",
+        type=str,
+        default="INFO",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="Log level of loguru",
+    )
     return parser
 
 
@@ -625,6 +785,26 @@ def fit(
                 f"{len(state_var_names)} state variables)."
             )
 
+    # Further domains to train on (multi-domain training)
+    if len(data_config.additional_config_paths) != len(
+        model_config.additional_graphs
+    ):
+        raise ValueError(
+            "One graph name is needed per domain: got "
+            f"{len(data_config.additional_config_paths)} additional configs "
+            f"but {len(model_config.additional_graphs)} additional graphs."
+        )
+    additional_domains = []
+    for extra_config_path, extra_graph in zip(
+        data_config.additional_config_paths, model_config.additional_graphs
+    ):
+        _, extra_datastore, extra_datastore_boundary = (
+            load_config_and_datastore(config_path=extra_config_path)
+        )
+        additional_domains.append(
+            (extra_datastore, extra_datastore_boundary, extra_graph)
+        )
+
     data_module = WeatherDataModule(
         datastore=datastore,
         ar_steps_train=train_config.ar_steps_train,
@@ -638,6 +818,15 @@ def fit(
         batch_size=train_config.batch_size,
         num_workers=data_config.num_workers,
         eval_split=train_config.eval or "test",
+        add_boundary_time_deltas=datastore_boundary is not None
+        and model_config.model in GRAPH_MODELS,
+        dynamic_time_deltas=data_config.dynamic_time_deltas,
+        eval_init_times=train_config.eval_init_times,
+        excluded_intervals=config.training.excluded_intervals,
+        additional_domains=[
+            (extra_ds, extra_dsb)
+            for extra_ds, extra_dsb, _ in additional_domains
+        ],
     )
 
     # Instantiate model + trainer
@@ -671,7 +860,14 @@ def fit(
     # Build predictor and forecaster externally, then inject into
     # DeterministicForecastingModule
     predictor_class = MODELS[model_config.model]
-    predictor = build_predictor(predictor_class, hparams, config, datastore)
+    predictor = build_predictor(
+        predictor_class,
+        hparams,
+        config,
+        datastore,
+        datastore_boundary=datastore_boundary,
+        additional_domains=additional_domains or None,
+    )
 
     if not train_config.eval and not predictor.trainable:
         raise ValueError(
@@ -679,7 +875,11 @@ def fit(
             "--eval <val/test> to evaluate a baseline."
         )
     forecaster = DeterministicARForecaster(
-        predictor, datastore, config=config, loss=train_config.loss
+        predictor,
+        datastore,
+        config=config,
+        loss=train_config.loss,
+        grad_checkpointing=train_config.grad_checkpointing,
     )
 
     model = DeterministicForecastingModule(
@@ -701,6 +901,11 @@ def fit(
     prefix = f"eval-{train_config.eval}-" if train_config.eval else "train-"
     if logging_config.logger_run_name:
         run_name = logging_config.logger_run_name
+    elif train_config.load and _run_name_from_checkpoint(train_config.load):
+        # Continue in the run directory of the loaded checkpoint
+        run_name = cast("str", _run_name_from_checkpoint(train_config.load))
+        if train_config.eval:
+            run_name = f"{run_name}-eval"
     else:
         run_name = (
             f"{prefix}{model_config.model}-"
@@ -735,6 +940,19 @@ def fit(
         save_on_train_epoch_end=True,
         enable_version_counter=False,
     )
+    callbacks: list[pl.Callback] = [val_checkpoint, latest_checkpoint]
+    if train_config.save_every_n_epochs:
+        callbacks.append(
+            PeriodicModelCheckpoint(
+                dirpath=os.path.join(run_dir, "checkpoints"),
+                filename="{epoch:03d}-{step:07d}",
+                monitor=None,
+                save_top_k=-1,
+                every_n_epochs=train_config.save_every_n_epochs,
+                save_on_train_epoch_end=True,
+            )
+        )
+
     trainer = pl.Trainer(
         max_epochs=train_config.epochs,
         deterministic=True,
@@ -745,7 +963,7 @@ def fit(
         devices=devices,
         logger=training_logger,
         log_every_n_steps=1,
-        callbacks=[val_checkpoint, latest_checkpoint],
+        callbacks=callbacks,
         check_val_every_n_epoch=train_config.val_interval,
         precision=cast("Any", compute_config.precision),
         num_sanity_val_steps=train_config.num_sanity_val_steps,
@@ -786,6 +1004,41 @@ def fit(
     )
 
 
+class PeriodicModelCheckpoint(pl.callbacks.ModelCheckpoint):
+    """Checkpoint callback keeping all checkpoints of every n-th epoch, with
+    a state key distinct from the other checkpoint callbacks."""
+
+    @property
+    def state_key(self) -> str:
+        """Unique key of the callback state in checkpoints.
+
+        Returns
+        -------
+        str
+            The state key.
+        """
+        return f"periodic-{super().state_key}"
+
+
+def _run_name_from_checkpoint(ckpt_path: str) -> str | None:
+    """Run name of a checkpoint stored as ``<runs_root>/<run>/checkpoints``.
+
+    Parameters
+    ----------
+    ckpt_path : str
+        Path to the checkpoint file.
+
+    Returns
+    -------
+    str or None
+        The run name, or ``None`` if the path has another layout.
+    """
+    path = Path(ckpt_path).resolve()
+    if path.parent.name == "checkpoints":
+        return path.parent.parent.name
+    return None
+
+
 def run(
     args: Namespace,
     config: NeuralLAMConfig | None = None,
@@ -810,6 +1063,21 @@ def run(
     Run
         Paths to the run outputs and saved checkpoints.
     """
+    # Several domains given with --config_paths/--graph_names, the first one
+    # is the main domain
+    config_paths = getattr(args, "config_paths", None)
+    graph_names = getattr(args, "graph_names", None)
+    if config_paths:
+        if args.config_path and args.config_path != config_paths[0]:
+            raise ValueError("Give either --config_path or --config_paths.")
+        args.config_path = config_paths[0]
+        args.additional_config_paths = list(config_paths[1:])
+    if graph_names:
+        args.graph = graph_names[0]
+        args.additional_graphs = list(graph_names[1:])
+    if not getattr(args, "config_path", None) and config is None:
+        raise ValueError("A config must be given with --config_path.")
+
     var_leads = getattr(args, "var_leads_metrics_watch", "{}")
     if isinstance(var_leads, str):
         args.var_leads_metrics_watch = {
@@ -850,8 +1118,18 @@ def main(input_args: list[str] | None = None) -> None:
     """Main function for training and evaluating models."""
     parser = build_parser()
     args = parser.parse_args(input_args)
+    logger.remove()
+    logger.add(sys.stderr, level=args.log_level)
     run(args)
 
 
 if __name__ == "__main__":
+    # `scancel -s USR1 <jobid>` dumps all thread stacks into the job log
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     main()
+    # Jobs have been seen to hang for hours in interpreter shutdown hooks
+    # after finishing, so exit hard. Errors are re-raised by main and give a
+    # non-zero exit code (for Slurm afterok dependencies).
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

@@ -143,6 +143,133 @@ def zero_index_g2m(
         )
 
 
+RC_MESH_FEATURES_FILENAME = "m2m_node_features.pt"
+TRIGRAPH_MESH_LAT_LON_FILENAME = "mesh_lat_lon.pt"
+
+
+def _load_rc_format_graph(
+    loads_file: Any, graph_dir_path: str | Path
+) -> tuple[bool, dict[str, Any]]:
+    """
+    Load a graph in the format written by the boundary-forcing graph
+    builders (``m2m_node_features.pt`` instead of ``mesh_features.pt``).
+
+    Loading reproduces the original loader of those graphs exactly, so that
+    models trained on them see identical inputs: g2m/m2g edge indices are
+    used as stored (grid nodes ordered interior first, then boundary), mesh
+    node features are not rescaled, and for rectangular graphs the m2m edge
+    index and edge features are zero-offset per row. Triangular graphs
+    (with ``mesh_lat_lon.pt``) have 3D features that are already rescaled.
+
+    Parameters
+    ----------
+    loads_file : callable
+        Function loading a file from the graph directory by name.
+    graph_dir_path : str or Path
+        Path to the graph directory.
+
+    Returns
+    -------
+    hierarchical : bool
+        Whether the graph is hierarchical.
+    graph : dict
+        Graph tensors, with the same keys as :func:`load_graph`.
+    """
+    tri_graph = (Path(graph_dir_path) / TRIGRAPH_MESH_LAT_LON_FILENAME).exists()
+    if tri_graph:
+
+        def reindex_func(tensor: torch.Tensor) -> torch.Tensor:
+            """Identity, tri-graph indices are already zero-based.
+
+            Parameters
+            ----------
+            tensor : torch.Tensor
+                Tensor to return unchanged.
+
+            Returns
+            -------
+            torch.Tensor
+                ``tensor``.
+            """
+            return tensor
+
+    else:
+        reindex_func = zero_index_edge_index
+
+    m2m_edge_index = [
+        reindex_func(t).clone() for t in loads_file("m2m_edge_index.pt")
+    ]
+    g2m_edge_index = loads_file("g2m_edge_index.pt")
+    m2g_edge_index = loads_file("m2g_edge_index.pt")
+    n_levels = len(m2m_edge_index)
+    hierarchical = n_levels > 1
+
+    # NOTE: the original loader applied the same zero-offsetting to the m2m
+    # edge features, which is kept to stay consistent with trained models
+    m2m_features = [
+        reindex_func(t).clone() for t in loads_file("m2m_features.pt")
+    ]
+    g2m_features = loads_file("g2m_features.pt")
+    m2g_features = loads_file("m2g_features.pt")
+    mesh_static_features = loads_file(RC_MESH_FEATURES_FILENAME)
+
+    if mesh_static_features[0].shape[-1] > 2:
+        # 3D features of tri-graphs are already rescaled when created
+        longest_edge = 1.0
+    else:
+        longest_edge = max(
+            torch.max(level_features[:, 0]) for level_features in m2m_features
+        )
+    m2m_features = [f / longest_edge for f in m2m_features]
+    g2m_features = g2m_features / longest_edge
+    m2g_features = m2g_features / longest_edge
+
+    if len(m2m_features) != n_levels or len(mesh_static_features) != n_levels:
+        raise ValueError("Inconsistent number of levels in mesh graph.")
+
+    if hierarchical:
+        graph = {
+            "m2m_edge_index": BufferList(m2m_edge_index, persistent=False),
+            "m2m_features": BufferList(m2m_features, persistent=False),
+            "mesh_static_features": BufferList(
+                mesh_static_features, persistent=False
+            ),
+            "mesh_up_edge_index": BufferList(
+                loads_file("mesh_up_edge_index.pt"), persistent=False
+            ),
+            "mesh_down_edge_index": BufferList(
+                loads_file("mesh_down_edge_index.pt"), persistent=False
+            ),
+            "mesh_up_features": BufferList(
+                [f / longest_edge for f in loads_file("mesh_up_features.pt")],
+                persistent=False,
+            ),
+            "mesh_down_features": BufferList(
+                [f / longest_edge for f in loads_file("mesh_down_features.pt")],
+                persistent=False,
+            ),
+        }
+    else:
+        graph = {
+            "m2m_edge_index": m2m_edge_index[0],
+            "m2m_features": m2m_features[0],
+            "mesh_static_features": mesh_static_features[0],
+            "mesh_up_edge_index": BufferList([], persistent=False),
+            "mesh_down_edge_index": BufferList([], persistent=False),
+            "mesh_up_features": BufferList([], persistent=False),
+            "mesh_down_features": BufferList([], persistent=False),
+        }
+    graph.update(
+        {
+            "g2m_edge_index": g2m_edge_index,
+            "m2g_edge_index": m2g_edge_index,
+            "g2m_features": g2m_features,
+            "m2g_features": m2g_features,
+        }
+    )
+    return hierarchical, graph
+
+
 def load_graph(
     graph_dir_path: str | Path,
     mesh_node_features_scaling: float,
@@ -263,6 +390,11 @@ def load_graph(
                 f"{METAINFO_FILENAME} is missing 'spec_version' entry"
             )
         return spec_version
+
+    if (Path(graph_dir_path) / RC_MESH_FEATURES_FILENAME).exists():
+        # Graph written by build_rectangular_graph/build_triangular_graph of
+        # the boundary-forcing research code
+        return _load_rc_format_graph(loads_file, graph_dir_path)
 
     # Load static node features
     mesh_static_features = loads_file(
@@ -431,6 +563,7 @@ def load_and_register_graph(
     datastore: BaseDatastore,
     graph_name: str,
     mesh_node_features_scaling: float,
+    graph_dir: str | Path | None = None,
 ) -> bool:
     """
     Load a graph and register its tensors on ``module``.
@@ -451,13 +584,21 @@ def load_and_register_graph(
     mesh_node_features_scaling : float
         Scalar used to normalize mesh node coordinate features for graphs in
         the current on-disk format; forwarded to :func:`load_graph`.
+    graph_dir : str or Path, optional
+        Directory holding the graph directories, instead of
+        ``<datastore.root_path>/graph``.
 
     Returns
     -------
     bool
         Whether the loaded graph is hierarchical.
     """
-    graph_dir_path = datastore.root_path / "graph" / graph_name
+    graph_root = (
+        Path(graph_dir)
+        if graph_dir is not None
+        else datastore.root_path / "graph"
+    )
+    graph_dir_path = graph_root / graph_name
     hierarchical, graph_ldict = load_graph(
         graph_dir_path=graph_dir_path,
         mesh_node_features_scaling=mesh_node_features_scaling,

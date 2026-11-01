@@ -2,6 +2,9 @@
 
 # Standard library
 
+# Standard library
+from typing import Any
+
 # Third-party
 import torch
 from torch import nn
@@ -44,6 +47,7 @@ class BaseHiGraphModel(BaseGraphModel):
         m2g_gnn_type: str = "InteractionNet",
         mesh_up_gnn_type: str = "InteractionNet",
         mesh_down_gnn_type: str = "InteractionNet",
+        **kwargs: Any,
     ) -> None:
         """Extend :class:`BaseGraphModel` with hierarchical mesh structures."""
         super().__init__(
@@ -60,6 +64,7 @@ class BaseHiGraphModel(BaseGraphModel):
             output_clamping_upper=output_clamping_upper,
             g2m_gnn_type=g2m_gnn_type,
             m2g_gnn_type=m2g_gnn_type,
+            **kwargs,
         )
         self.mesh_up_gnn_type = mesh_up_gnn_type
         self.mesh_down_gnn_type = mesh_down_gnn_type
@@ -97,10 +102,13 @@ class BaseHiGraphModel(BaseGraphModel):
         mesh_down_dim = self.mesh_down_features[0].shape[1]
 
         # Separate mesh node embedders for each level
+        # The bottom level is embedded to the grid hidden dim, as it
+        # receives from the grid
         self.mesh_embedders = nn.ModuleList(
-            [
+            [utils.make_mlp([mesh_dim] + self.grid_mlp_blueprint_end)]
+            + [
                 utils.make_mlp([mesh_dim] + self.mlp_blueprint_end)
-                for _ in range(self.num_levels)
+                for _ in range(self.num_levels - 1)
             ]
         )
         self.mesh_same_embedders = nn.ModuleList(

@@ -111,7 +111,7 @@ def main():
         "grid_index",
         "forcing_feature",
     ]
-    _, cfg_boundary.output.variables.pop("state", None)
+    cfg_boundary.output.variables.pop("state", None)
     cfg_boundary.output.splitting = output_splitting
     logger.info("Saving the interior and boundary datastores.")
     cfg_boundary.to_yaml_file(datastore_boundary_config_path)

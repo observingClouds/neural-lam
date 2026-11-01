@@ -1,10 +1,11 @@
-datastore:
-  kind: mdp
-  config_path: danra_interior_config.yaml
-datastore_boundary:
-  kind: mdp
-  config_path: danra_ifs_config.yaml
-  overload_stats_path: danra_era5_config.yaml
+datastores:
+  interior:
+    kind: mdp
+    config_path: danra_interior_config.yaml
+  boundary:
+    kind: mdp
+    config_path: danra_ifs_config.yaml
+    overload_stats_path: danra_era5_config.yaml
 training:
   state_feature_weighting:
     __config_class__: ManualStateFeatureWeighting

@@ -2,6 +2,9 @@
 Parallel hierarchical graph-based LAM model.
 """
 
+# Standard library
+from typing import Any
+
 # Third-party
 import torch
 import torch_geometric as pyg
@@ -38,6 +41,7 @@ class HiLAMParallel(BaseHiGraphModel):
         m2g_gnn_type: str = "InteractionNet",
         mesh_up_gnn_type: str = "InteractionNet",
         mesh_down_gnn_type: str = "InteractionNet",
+        **kwargs: Any,
     ) -> None:
         """
         Initialize the HiLAMParallel model.
@@ -83,6 +87,7 @@ class HiLAMParallel(BaseHiGraphModel):
             m2g_gnn_type=m2g_gnn_type,
             mesh_up_gnn_type=mesh_up_gnn_type,
             mesh_down_gnn_type=mesh_down_gnn_type,
+            **kwargs,
         )
 
         # Processor GNNs

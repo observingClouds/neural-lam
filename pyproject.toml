@@ -67,6 +67,8 @@ optional-dependencies.docs = [
   "sphinx-copybutton>=0.5.2",
   "sphinxext-opengraph>=0.9",
 ]
+# Triangular (icosahedral) graph creation, `neural_lam.build_triangular_graph`
+optional-dependencies.graph = [ "rtree", "spherical-geometry>=1.3.2", "trimesh" ]
 optional-dependencies.gpu = [ "torch>=2.12,<2.13" ]  # CUDA 13.0, default GPU build
 optional-dependencies.gpu-cu128 = [ "torch>=2.11,<2.12" ]  # CUDA 12.8, last torch series with cu128 wheels
 scripts.create_graph_with_wmg = "neural_lam.create_graph_with_wmg:cli"
@@ -130,6 +132,12 @@ lint.per-file-ignores."__init__.py" = [ "F401" ]
 lint.per-file-ignores."docs/**" = [ "ANN" ]
 lint.per-file-ignores."docs/notebooks/*.py" = [ "E501" ]
 lint.per-file-ignores."tests/**" = [ "ANN" ]
+# Research tools taken over from the boundary-forcing branch, not yet typed
+lint.per-file-ignores."neural_lam/build_triangular_graph.py" = [ "ANN", "E501", "PTH" ]
+lint.per-file-ignores."neural_lam/graphs/**" = [ "ANN", "E501", "PTH", "S" ]
+lint.per-file-ignores."neural_lam/plot_graph_globe.py" = [ "ANN", "E501", "PTH" ]
+lint.per-file-ignores."neural_lam/plot_val_test_metric.py" = [ "ANN", "E501", "PTH", "S301" ]
+lint.per-file-ignores."neural_lam/split_datastore.py" = [ "ANN", "E501" ]
 lint.isort.import-heading = { first-party = "First-party", local-folder = "Local", standard-library = "Standard library", third-party = "Third-party" }
 lint.isort.known-first-party = [ "neural_lam", "tests" ]
 lint.isort.known-third-party = [ "wandb" ]
@@ -178,5 +186,14 @@ ignore-magic = false
 ignore-private = false
 ignore-nested-functions = false
 ignore-property-decorators = false
-exclude = [ "tests", "docs", "build" ]
+exclude = [
+  "build",
+  "docs",
+  "neural_lam/build_triangular_graph.py",
+  "neural_lam/graphs",
+  "neural_lam/plot_graph_globe.py",
+  "neural_lam/plot_val_test_metric.py",
+  "neural_lam/split_datastore.py",
+  "tests",
+]
 omit-covered-files = true

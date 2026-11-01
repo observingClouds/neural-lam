@@ -2,6 +2,7 @@
 
 # Third-party
 import torch
+import torch.utils.checkpoint
 
 # Local
 from ..step_predictors.base import StepPredictor
@@ -14,6 +15,8 @@ def unroll_forecast(
     boundary_states: torch.Tensor,
     boundary_mask: torch.Tensor,
     interior_mask: torch.Tensor,
+    boundary_forcing: torch.Tensor | None = None,
+    grad_checkpointing: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """
     Unroll one forecast auto-regressively.
@@ -59,6 +62,13 @@ def unroll_forecast(
         Shape ``(1, num_grid_nodes, 1)``. The complement of
         ``boundary_mask``, passed in rather than derived so the buffer the
         forecaster already holds is reused.
+    boundary_forcing : torch.Tensor, optional
+        Shape ``(B, pred_steps, num_boundary_nodes, num_boundary_features)``.
+        Boundary forcing from a separate boundary datastore, passed on to
+        boundary-forced predictors.
+    grad_checkpointing : bool, optional
+        If True, use gradient checkpointing for each unrolled step, trading
+        compute for memory. Default False.
 
     Returns
     -------
@@ -76,19 +86,87 @@ def unroll_forecast(
     prev_state = init_states[:, 1]
     prediction_list = []
     pred_std_list = []
+    aux_lists: dict[str, list[torch.Tensor]] = {}
     pred_steps = forcing_features.shape[1]
+    boundary_forced = getattr(predictor, "boundary_forced", False)
+
+    def step(
+        prev_state: torch.Tensor,
+        prev_prev_state: torch.Tensor,
+        forcing: torch.Tensor,
+        boundary_forcing_step: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+        """One predictor step, also returning its gate logits (if any).
+
+        Parameters
+        ----------
+        prev_state, prev_prev_state, forcing : torch.Tensor
+            Predictor inputs.
+        boundary_forcing_step : torch.Tensor or None
+            Boundary forcing for boundary-forced predictors.
+
+        Returns
+        -------
+        tuple
+            ``(pred_state, pred_std, gate_logits)``.
+        """
+        if boundary_forced:
+            pred_state, pred_std = predictor(
+                prev_state,
+                prev_prev_state,
+                forcing,
+                boundary_forcing=boundary_forcing_step,
+            )
+        else:
+            pred_state, pred_std = predictor(
+                prev_state, prev_prev_state, forcing
+            )
+        step_aux = getattr(predictor, "step_aux", {}) or {}
+        return pred_state, pred_std, step_aux.get("gate_logits")
 
     for i in range(pred_steps):
         forcing = forcing_features[:, i]
         boundary_state = boundary_states[:, i]
+        boundary_forcing_step = (
+            boundary_forcing[:, i]
+            if boundary_forcing is not None and boundary_forcing.shape[-1] > 0
+            else None
+        )
 
-        pred_state, pred_std = predictor(prev_state, prev_prev_state, forcing)
+        if grad_checkpointing:
+            pred_state, pred_std, gate_logits = (
+                torch.utils.checkpoint.checkpoint(
+                    step,
+                    prev_state,
+                    prev_prev_state,
+                    forcing,
+                    boundary_forcing_step,
+                    use_reentrant=False,
+                )
+            )
+        else:
+            pred_state, pred_std, gate_logits = step(
+                prev_state, prev_prev_state, forcing, boundary_forcing_step
+            )
 
-        new_state = boundary_mask * boundary_state + interior_mask * pred_state
+        if boundary_mask.shape[-2] == pred_state.shape[-2]:
+            new_state = (
+                boundary_mask * boundary_state + interior_mask * pred_state
+            )
+        elif not bool(boundary_mask.any()):
+            # Mask of another domain without boundary nodes, nothing to
+            # overwrite (multi-domain training with boundary datastores)
+            new_state = pred_state
+        else:
+            raise ValueError(
+                "The boundary mask does not match the number of grid nodes."
+            )
 
         prediction_list.append(new_state)
         if pred_std is not None:
             pred_std_list.append(pred_std)
+        if gate_logits is not None:
+            aux_lists.setdefault("gate_logits", []).append(gate_logits)
 
         # Update conditioning states
         prev_prev_state = prev_state
@@ -96,5 +174,9 @@ def unroll_forecast(
 
     prediction = torch.stack(prediction_list, dim=1)
     stacked_std = torch.stack(pred_std_list, dim=1) if pred_std_list else None
+    # Stacked auxiliary outputs, (B, pred_steps, ...), read by forecasters
+    predictor.rollout_aux = {
+        name: torch.stack(values, dim=1) for name, values in aux_lists.items()
+    }
 
     return prediction, stacked_std

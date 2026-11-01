@@ -60,6 +60,7 @@ class BaseDeterministicForecaster(BaseForecaster):
         """
         super().__init__(datastore=datastore)
         self.loss = metrics.get_metric(loss)
+        self.loss_name = loss
 
         # Whether the fallback is needed is settled per call in
         # _resolve_pred_std
@@ -69,6 +70,122 @@ class BaseDeterministicForecaster(BaseForecaster):
             else None
         )
         self.register_buffer("per_var_std", per_var_std, persistent=False)
+        self._init_quantile_matching(config, datastore)
+
+    def _init_quantile_matching(
+        self, config: NeuralLAMConfig | None, datastore: BaseDatastore
+    ) -> None:
+        """Set up the optional quantile matching loss term.
+
+        Parameters
+        ----------
+        config : NeuralLAMConfig or None
+            Configuration holding ``training.quantile_matching``.
+        datastore : BaseDatastore
+            Datastore providing the state feature names.
+
+        Raises
+        ------
+        ValueError
+            If weights are given for features that are not state features.
+        """
+        qm_weights = (
+            dict(config.training.quantile_matching.weights)
+            if config is not None
+            else {}
+        )
+        state_feature_names = datastore.get_vars_names(category="state")
+        unknown = set(qm_weights) - set(state_feature_names)
+        if unknown:
+            raise ValueError(
+                f"Quantile matching weights given for {unknown}, which are "
+                f"not state features ({state_feature_names})"
+            )
+        self.qm_feature_names = list(qm_weights)
+        qm_indices = torch.tensor(
+            [state_feature_names.index(n) for n in qm_weights],
+            dtype=torch.long,
+        )
+        self.register_buffer("qm_indices", qm_indices, persistent=False)
+        self.register_buffer(
+            "qm_weights",
+            torch.tensor(list(qm_weights.values()), dtype=torch.float32),
+            persistent=False,
+        )
+        # Scale the term like the wmse term of the same feature, so that the
+        # weight is relative to that feature's own loss term
+        if self.loss_name == "wmse" and self.per_var_std is not None:
+            qm_scale = 1.0 / self.per_var_std[qm_indices] ** 2
+        else:
+            qm_scale = torch.ones(len(qm_weights))
+        self.register_buffer("qm_scale", qm_scale, persistent=False)
+
+    def compute_auxiliary_losses(
+        self,
+        prediction: torch.Tensor,
+        target_states: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor | None, dict[str, torch.Tensor]]:
+        """
+        Additional loss terms on top of the scoring rule: the quantile
+        matching term (``training.quantile_matching``) and the binary
+        cross-entropy of gated features (``output_clamping.gated_features``)
+        from the last rollout.
+
+        Parameters
+        ----------
+        prediction : torch.Tensor
+            Shape ``(B, pred_steps, num_grid_nodes, num_state_vars)``.
+        target_states : torch.Tensor
+            Shape ``(B, pred_steps, num_grid_nodes, num_state_vars)``.
+        mask : torch.Tensor or None, optional
+            Shape ``(num_grid_nodes,)``, boolean mask of nodes to use.
+
+        Returns
+        -------
+        step_loss : torch.Tensor or None
+            Shape ``(B, pred_steps)``, summed additional terms, or ``None``
+            if there are none.
+        log_components : dict of {str: torch.Tensor}
+            Scalar values to log (without split prefix).
+        """
+        step_loss = None
+        log_components: dict[str, torch.Tensor] = {}
+        if mask is not None and mask.shape[0] != prediction.shape[-2]:
+            # Mask of another domain, only all-interior masks carry over
+            mask = None
+
+        if self.qm_indices.numel() > 0:
+            qm_per_feature = metrics.sorted_mse(
+                prediction[..., self.qm_indices],
+                target_states[..., self.qm_indices],
+                mask=mask,
+            )  # (B, pred_steps, n_qm)
+            step_loss = torch.sum(
+                qm_per_feature * self.qm_scale * self.qm_weights, dim=-1
+            )
+            for i, name in enumerate(self.qm_feature_names):
+                log_components[f"qm_{name}"] = qm_per_feature[..., i].mean()
+
+        predictor = getattr(self, "predictor", None)
+        rollout_aux = getattr(predictor, "rollout_aux", {}) or {}
+        gate_logits = rollout_aux.get("gate_logits")
+        if gate_logits is not None:
+            assert predictor is not None
+            gated_targets = target_states[..., predictor.gated_indices]
+            binary_targets = (gated_targets > predictor.gate_thresholds).to(
+                gate_logits.dtype
+            )
+            bce = torch.nn.functional.binary_cross_entropy_with_logits(
+                gate_logits, binary_targets, reduction="none"
+            )  # (B, pred_steps, num_grid_nodes, num_gated)
+            if mask is not None:
+                bce = bce[..., mask, :]
+            bce_loss = bce.sum(dim=-1).mean(dim=-1)  # (B, pred_steps)
+            step_loss = bce_loss if step_loss is None else step_loss + bce_loss
+            log_components["gate_bce"] = bce_loss.mean()
+
+        return step_loss, log_components
 
     def compute_training_loss(
         self,
@@ -143,7 +260,12 @@ class BaseDeterministicForecaster(BaseForecaster):
             pred_std,
             mask=interior_mask_bool,
         )
-        return torch.mean(step_losses), {}
+        aux_loss, aux_components = self.compute_auxiliary_losses(
+            prediction, target_states, mask=interior_mask_bool
+        )
+        if aux_loss is not None:
+            step_losses = step_losses + aux_loss
+        return torch.mean(step_losses), aux_components
 
     def _resolve_pred_std(
         self, pred_std: torch.Tensor | None
@@ -267,6 +389,7 @@ class DeterministicARForecaster(BaseDeterministicForecaster):
         datastore: BaseDatastore,
         config: NeuralLAMConfig | None = None,
         loss: str = "wmse",
+        grad_checkpointing: bool = False,
     ) -> None:
         """
         Initialize the DeterministicARForecaster.
@@ -287,9 +410,12 @@ class DeterministicARForecaster(BaseDeterministicForecaster):
         loss : str, default "wmse"
             The scoring rule (from ``neural_lam.metrics``) applied by
             ``compute_training_loss``.
+        grad_checkpointing : bool, default False
+            Use gradient checkpointing in-between each unrolled step.
         """
         super().__init__(datastore=datastore, config=config, loss=loss)
         self.predictor = predictor
+        self.grad_checkpointing = grad_checkpointing
 
     @property
     def predicts_std(self) -> bool:
@@ -309,6 +435,7 @@ class DeterministicARForecaster(BaseDeterministicForecaster):
         init_states: torch.Tensor,
         forcing_features: torch.Tensor,
         boundary_states: torch.Tensor,
+        boundary_forcing: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """
         Unroll one auto-regressive forecast.
@@ -326,6 +453,9 @@ class DeterministicARForecaster(BaseDeterministicForecaster):
             Shape ``(B, pred_steps, num_grid_nodes, num_state_vars)``. True
             state values used ONLY to overwrite boundary nodes at each AR
             step.
+        boundary_forcing : torch.Tensor, optional
+            Shape ``(B, pred_steps, num_boundary_nodes, num_boundary_feats)``.
+            Forcing from a separate boundary datastore.
 
         Returns
         -------
@@ -344,4 +474,6 @@ class DeterministicARForecaster(BaseDeterministicForecaster):
             boundary_states,
             self.boundary_mask,
             self.interior_mask,
+            boundary_forcing=boundary_forcing,
+            grad_checkpointing=self.grad_checkpointing,
         )

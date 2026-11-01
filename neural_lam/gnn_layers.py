@@ -30,6 +30,7 @@ class InteractionNet(pyg.nn.MessagePassing):
         edge_chunk_sizes: list[int] | None = None,
         aggr_chunk_sizes: list[int] | None = None,
         aggr: str = "sum",
+        num_rec: int | None = None,
     ) -> None:
         """
         Create a new InteractionNet.
@@ -70,7 +71,6 @@ class InteractionNet(pyg.nn.MessagePassing):
             # Default to input dim if not explicitly given
             hidden_dim = input_dim
 
-        self.num_rec = edge_index[1].max() + 1
         # edge_index is expected to be zero-based and local:
         #   edge_index[0]: sender indices in [0 .. num_snd-1]
         #   edge_index[1]: receiver indices in [0 .. num_rec-1]
@@ -79,11 +79,8 @@ class InteractionNet(pyg.nn.MessagePassing):
         #   senders   → [num_rec .. num_rec+num_snd-1]
         # Hence, sender indices from the input edge_index are offset
         # by num_rec to obtain the indices used in this layer.
-        edge_index = torch.stack(
-            (edge_index[0] + self.num_rec, edge_index[1]), dim=0
-        )
-
         self.register_buffer("edge_index", edge_index, persistent=False)
+        self.set_edge_index(edge_index, num_rec=num_rec)
 
         # Create MLPs
         edge_mlp_recipe = [3 * input_dim] + [hidden_dim] * (hidden_layers + 1)
@@ -156,6 +153,29 @@ class InteractionNet(pyg.nn.MessagePassing):
 
         return rec_rep
 
+    def set_edge_index(
+        self, edge_index: torch.Tensor, num_rec: int | None = None
+    ) -> None:
+        """
+        Set the (zero-based, local) edge index the layer passes messages
+        along, e.g. to switch to the graph of another domain.
+
+        Parameters
+        ----------
+        edge_index : torch.Tensor
+            Shape ``(2, num_edges)``. Sender and receiver indices.
+        num_rec : int, optional
+            Number of receiver nodes. If ``None``, derived as the largest
+            receiver index plus one, which assumes that the last receiver
+            has at least one incoming edge.
+        """
+        if num_rec is None:
+            num_rec = int(edge_index[1].max()) + 1
+        self.num_rec = num_rec
+        self.edge_index = torch.stack(
+            (edge_index[0] + self.num_rec, edge_index[1]), dim=0
+        )
+
     def node_residual_target(
         self, rec_rep: torch.Tensor, edge_rep_aggr: torch.Tensor
     ) -> torch.Tensor:
@@ -209,6 +229,7 @@ class PropagationNet(InteractionNet):
         edge_chunk_sizes: list[int] | None = None,
         aggr_chunk_sizes: list[int] | None = None,
         aggr: str = "sum",
+        num_rec: int | None = None,
     ) -> None:
         """Initialise the :class:`PropagationNet` layer.
 
@@ -227,6 +248,7 @@ class PropagationNet(InteractionNet):
             edge_chunk_sizes=edge_chunk_sizes,
             aggr_chunk_sizes=aggr_chunk_sizes,
             aggr="mean",
+            num_rec=num_rec,
         )
 
     def node_residual_target(

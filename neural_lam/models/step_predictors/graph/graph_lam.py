@@ -2,6 +2,9 @@
 
 # Standard library
 
+# Standard library
+from typing import Any
+
 # Third-party
 import torch
 import torch_geometric as pyg
@@ -40,7 +43,7 @@ class GraphLAM(BaseGraphModel):
         output_clamping_upper: dict[str, float] | None = None,
         g2m_gnn_type: str = "InteractionNet",
         m2g_gnn_type: str = "InteractionNet",
-        **_kwargs: object,
+        **kwargs: Any,
     ) -> None:
         """
         Initialize the GraphLAM model.
@@ -84,6 +87,11 @@ class GraphLAM(BaseGraphModel):
             output_clamping_upper=output_clamping_upper,
             g2m_gnn_type=g2m_gnn_type,
             m2g_gnn_type=m2g_gnn_type,
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k not in ("mesh_up_gnn_type", "mesh_down_gnn_type")
+            },
         )
 
         assert not self.hierarchical, (
@@ -100,7 +108,10 @@ class GraphLAM(BaseGraphModel):
 
         # Define sub-models
         # Feature embedders for mesh
-        self.mesh_embedder = utils.make_mlp([mesh_dim] + self.mlp_blueprint_end)
+        # Mesh nodes receive from the grid, so embed to grid hidden dim
+        self.mesh_embedder = utils.make_mlp(
+            [mesh_dim] + self.grid_mlp_blueprint_end
+        )
         self.m2m_embedder = utils.make_mlp([m2m_dim] + self.mlp_blueprint_end)
 
         # GNNs
@@ -114,16 +125,20 @@ class GraphLAM(BaseGraphModel):
             )
             for _ in range(processor_layers)
         ]
-        self.processor = pyg.nn.Sequential(
-            "mesh_rep, edge_rep",
-            [
-                (
-                    net,
-                    "mesh_rep, mesh_rep, edge_rep -> mesh_rep, edge_rep",
-                )
-                for net in processor_nets
-            ],
-        )
+        if processor_layers == 0:
+            # No processing on the mesh, only encode-decode
+            self.processor = None
+        else:
+            self.processor = pyg.nn.Sequential(
+                "mesh_rep, edge_rep",
+                [
+                    (
+                        net,
+                        "mesh_rep, mesh_rep, edge_rep -> mesh_rep, edge_rep",
+                    )
+                    for net in processor_nets
+                ],
+            )
 
     def get_num_mesh(self) -> tuple[int, int]:
         """
@@ -173,6 +188,9 @@ class GraphLAM(BaseGraphModel):
             Shape ``(B, num_mesh_nodes, hidden_dim)``. Updated mesh node
             representations. Dims: same as ``mesh_rep``.
         """
+        if self.processor is None:
+            return mesh_rep
+
         # Embed m2m here first
         batch_size = mesh_rep.shape[0]
         m2m_emb = self.m2m_embedder(

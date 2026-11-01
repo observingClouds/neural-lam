@@ -78,17 +78,18 @@ def test_move_state_to_forcing():
         ds.state.sel(state_feature="tqc_dia").values,
     )
     for op in ["mean", "std", "diff_mean", "diff_std"]:
-        assert (
-            ds_new[f"forcing__train__{op}"].sel(forcing_feature="tqc_dia")
-            == ds[f"state__train__{op}"].sel(state_feature="tqc_dia")
-        )
+        assert ds_new[f"forcing__train__{op}"].sel(
+            forcing_feature="tqc_dia"
+        ) == ds[f"state__train__{op}"].sel(state_feature="tqc_dia")
 
     # remaining features are unchanged
     xr.testing.assert_identical(
         ds_new.state, ds.state.sel(state_feature=["u_10m", "t_2m"])
     )
     xr.testing.assert_identical(
-        ds_new.forcing.sel(forcing_feature=["toa_radiation", "hour_of_day_cos"]),
+        ds_new.forcing.sel(
+            forcing_feature=["toa_radiation", "hour_of_day_cos"]
+        ),
         ds.forcing,
     )
 

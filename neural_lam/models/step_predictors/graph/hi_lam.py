@@ -3,7 +3,7 @@ Hierarchical graph-based LAM model.
 """
 
 # Standard library
-from typing import cast
+from typing import Any, cast
 
 # Third-party
 import torch
@@ -39,6 +39,7 @@ class HiLAM(BaseHiGraphModel):
         m2g_gnn_type: str = "InteractionNet",
         mesh_up_gnn_type: str = "InteractionNet",
         mesh_down_gnn_type: str = "InteractionNet",
+        **kwargs: Any,
     ) -> None:
         """
         Initialize the HiLAM model.
@@ -84,6 +85,7 @@ class HiLAM(BaseHiGraphModel):
             m2g_gnn_type=m2g_gnn_type,
             mesh_up_gnn_type=mesh_up_gnn_type,
             mesh_down_gnn_type=mesh_down_gnn_type,
+            **kwargs,
         )
 
         # Make down GNNs, both for down edges and same level

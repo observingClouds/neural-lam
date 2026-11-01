@@ -11,7 +11,7 @@ from spherical_geometry.polygon import SphericalPolygon
 
 # Local
 from . import utils
-from .config import load_config_and_datastores
+from .config import load_config_and_datastore
 from .graphs import create as gcreate
 from .graphs import graph_utils as gutils
 from .graphs import vis as gvis
@@ -113,13 +113,15 @@ def main(input_args=None):
     )
     args = parser.parse_args(input_args)
 
-    _, datastore, datastore_boundary = load_config_and_datastores(
+    _, datastore, datastore_boundary = load_config_and_datastore(
         config_path=args.config_path
     )
 
     # Set up dir for saving graph
     if args.save_dir is None:
-        save_dir_path = os.path.join(datastore.root_path, "graph", args.graph_name)
+        save_dir_path = os.path.join(
+            datastore.root_path, "graph", args.graph_name
+        )
     else:
         save_dir_path = os.path.join(args.save_dir, args.graph_name)
     os.makedirs(save_dir_path, exist_ok=True)
@@ -127,9 +129,7 @@ def main(input_args=None):
     # Load grid positions
     grid_lat_lon = utils.get_stacked_lat_lons(
         datastore, datastore_boundary
-    ).astype(
-        np.float32
-    )  # Must be float32 for interoperability with gc code
+    ).astype(np.float32)  # Must be float32 for interoperability with gc code
     # (num_nodes_full, 2)
     num_grid_nodes = grid_lat_lon.shape[0]
 
@@ -285,7 +285,7 @@ def main(input_args=None):
     # pylint: disable-next=protected-access
     print(
         f"Edge length at bottom mesh level: {max_mesh_edge_len} "
-        f"(~{max_mesh_edge_len*6378} km)"
+        f"(~{max_mesh_edge_len * 6378} km)"
     )
 
     if boundary_region:
@@ -342,11 +342,9 @@ def main(input_args=None):
         num_disc_mesh = torch.sum(g2m_degrees_mesh == 0).item()
     if not (num_disc_grid == 0 and num_disc_mesh == 0):
         print(
-            (
-                "Disconnected nodes in G2M: "
-                f"{num_disc_grid} disconnected grid nodes, "
-                f"{num_disc_mesh} disconnected mesh nodes"
-            )
+            "Disconnected nodes in G2M: "
+            f"{num_disc_grid} disconnected grid nodes, "
+            f"{num_disc_mesh} disconnected mesh nodes"
         )
         # if not args.allow_disconnected:
         #    assert False, "Disconnected g2m nodes."
@@ -409,7 +407,7 @@ def main(input_args=None):
         f"Created graph with {num_grid_nodes} grid nodes "
         f"connected to {num_mesh_nodes} mesh nodes"
     )
-    print(f"#grid / #mesh = {num_grid_nodes/num_mesh_nodes :.2f}")
+    print(f"#grid / #mesh = {num_grid_nodes / num_mesh_nodes:.2f}")
 
 
 if __name__ == "__main__":

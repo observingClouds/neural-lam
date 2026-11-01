@@ -156,7 +156,14 @@ def test_config_parity(monkeypatch, tmp_path):
     dataclass_fields = {
         f.name for cls in dataclass_classes for f in dataclasses.fields(cls)
     }
-    assert parser_dests == dataclass_fields | {"config_path"}
+    # Several domains are given on the CLI as --config_paths/--graph_names,
+    # which fill in config_path/graph and the additional_* fields
+    multi_domain_fields = {"additional_config_paths", "additional_graphs"}
+    assert parser_dests == (dataclass_fields - multi_domain_fields) | {
+        "config_path",
+        "config_paths",
+        "graph_names",
+    }
 
     # 2. Config equality between run(), api.train(), and plain dataclasses
     captured = []

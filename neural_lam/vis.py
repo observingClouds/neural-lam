@@ -363,7 +363,7 @@ def plot_on_axis(
     cmap: str | matplotlib.colors.Colormap = "plasma",
     boundary_alpha: float | None = None,
     crop_to_interior: bool = False,
-) -> matplotlib.collections.QuadMesh:
+) -> matplotlib.collections.Collection:
     """
     Plot weather state on a projection-aware axis using datastore metadata.
 
@@ -406,6 +406,35 @@ def plot_on_axis(
     gl.right_labels = False
     gl.xlabel_style = {"size": _TICK_SIZE}
     gl.ylabel_style = {"size": _TICK_SIZE}
+
+    if not datastore.is_on_rectilinear_grid:
+        # Irregular grid (e.g. ICON), plot grid points as a scatter
+        lats_lons = datastore.get_lat_lon("state")
+        scatter = ax.scatter(
+            lats_lons[:, 0],
+            lats_lons[:, 1],
+            c=np.asarray(da.values).reshape(-1),
+            s=0.05,
+            transform=ccrs.PlateCarree(),
+            vmin=vmin,
+            vmax=vmax,
+            cmap=cmap,
+        )
+        if crop_to_interior:
+            interior = datastore.boundary_mask.values.reshape(-1) == 0
+            if np.any(interior):
+                ax.set_extent(
+                    [
+                        lats_lons[interior, 0].min(),
+                        lats_lons[interior, 0].max(),
+                        lats_lons[interior, 1].min(),
+                        lats_lons[interior, 1].max(),
+                    ],
+                    crs=ccrs.PlateCarree(),
+                )
+        if ax_title:
+            ax.set_title(ax_title, size=_TITLE_SIZE)
+        return scatter
 
     lats_lons = datastore.get_lat_lon("state")
     grid_shape = (

@@ -11,6 +11,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import xarray as xr
+from loguru import logger
 
 # First-party
 from neural_lam.datastore.base import BaseDatastore
@@ -141,6 +142,8 @@ class WeatherDataset(torch.utils.data.Dataset):
         num_future_boundary_steps: int = 1,
         datastore_boundary: BaseDatastore | None = None,
         load_single_member: bool = False,
+        add_boundary_time_deltas: bool = False,
+        dynamic_time_deltas: bool = False,
     ) -> None:
         """
         Parameters
@@ -171,6 +174,16 @@ class WeatherDataset(torch.utils.data.Dataset):
             realisations, treat each state ensemble member as an independent
             sample. If ``True``, only ensemble member 0 is used. Default
             ``False``.
+        add_boundary_time_deltas : bool, optional
+            If ``True``, append to the boundary forcing the time deltas
+            between each boundary window time and the time it is matched to,
+            in multiples of the interior state time step. These ``window``
+            features are appended last and are not standardized. Default
+            ``False``.
+        dynamic_time_deltas : bool, optional
+            If ``True``, compute the boundary time deltas relative to the
+            interior state (target) time instead of the matched boundary
+            time. Default ``False``.
 
         Raises
         ------
@@ -193,6 +206,8 @@ class WeatherDataset(torch.utils.data.Dataset):
         self.num_past_boundary_steps = num_past_boundary_steps
         self.num_future_boundary_steps = num_future_boundary_steps
         self.load_single_member = load_single_member
+        self.add_boundary_time_deltas = add_boundary_time_deltas
+        self.dynamic_time_deltas = dynamic_time_deltas
 
         da_state = self.datastore.get_dataarray(
             category="state", split=self.split
@@ -242,6 +257,11 @@ class WeatherDataset(torch.utils.data.Dataset):
             if datastore_boundary.is_forecast:
                 self._check_boundary_analysis_times()
                 self._check_boundary_forecast_horizon()
+
+        # Interior state time step, used as the unit of boundary time deltas
+        self._time_step_state = np.timedelta64(
+            self.datastore.step_length
+        ).astype("timedelta64[ns]")
 
         if self.datastore.is_ensemble and self.load_single_member:
             warnings.warn(
@@ -418,6 +438,23 @@ class WeatherDataset(torch.utils.data.Dataset):
             times[first + 1 : first + 1 + n_samples],
             times[first + self.ar_steps : first + self.ar_steps + n_samples],
         )
+
+    def sample_time_spans(self) -> tuple[np.ndarray, np.ndarray]:
+        """Init time and last state time of every sample index.
+
+        Returns
+        -------
+        tuple of np.ndarray
+            ``(init_times, end_times)``, one datetime64 entry per index in
+            ``range(len(self))`` (ensemble members expanded). The first
+            state used by a sample is one time step before its init time.
+        """
+        init_times, _, last_targets = self._sample_window_times()
+        if self.datastore.is_ensemble and not self.load_single_member:
+            n_members = self.da_state.ensemble_member.size
+            init_times = np.repeat(init_times, n_members)
+            last_targets = np.repeat(last_targets, n_members)
+        return init_times, last_targets
 
     def _check_boundary_analysis_times(self) -> None:
         """Check the boundary `analysis_time` is unique and sorted, as the
@@ -748,6 +785,19 @@ class WeatherDataset(torch.utils.data.Dataset):
                 da_sliced = da_sliced.assign_coords(
                     window=np.arange(-num_past_steps, num_future_steps + 1)
                 )
+                window_times = (
+                    forcing_at.values
+                    + da_forcing.elapsed_forecast_duration.values[
+                        int(window_start) : int(window_end)
+                    ]
+                )
+                matched_time = (
+                    forcing_at.values
+                    + da_forcing.elapsed_forecast_duration.values[lead]
+                )
+                da_sliced = self._assign_window_time_deltas(
+                    da_sliced, window_times, matched_time, target_time
+                )
                 da_sliced = da_sliced.expand_dims(dim={"time": [target_time]})
                 da_list.append(da_sliced)
         else:
@@ -780,10 +830,51 @@ class WeatherDataset(torch.utils.data.Dataset):
                 da_window = da_window.assign_coords(
                     window=np.arange(-num_past_steps, num_future_steps + 1)
                 )
+                da_window = self._assign_window_time_deltas(
+                    da_window,
+                    da_forcing.time.values[int(window_start) : int(window_end)],
+                    da_forcing.time.values[forcing_time_idx],
+                    state_time,
+                )
                 da_window = da_window.expand_dims(dim={"time": [state_time]})
                 da_list.append(da_window)
 
         return xr.concat(da_list, dim="time")
+
+    def _assign_window_time_deltas(
+        self,
+        da_window: xr.DataArray,
+        window_times: np.ndarray,
+        matched_time: np.datetime64,
+        state_time: np.datetime64,
+    ) -> xr.DataArray:
+        """Attach the time delta of each window entry as a ``window``
+        coordinate, in multiples of the interior state time step.
+
+        Parameters
+        ----------
+        da_window : xr.DataArray
+            One window of forcing/boundary data, with a ``window`` dimension.
+        window_times : np.ndarray
+            Valid times of the window entries.
+        matched_time : np.datetime64
+            The forcing time the window is centred on.
+        state_time : np.datetime64
+            The interior state time the window belongs to, used as reference
+            instead of ``matched_time`` if ``dynamic_time_deltas``.
+
+        Returns
+        -------
+        xr.DataArray
+            ``da_window`` with a ``window_time_delta`` coordinate.
+        """
+        reference_time = (
+            state_time if self.dynamic_time_deltas else matched_time
+        )
+        time_deltas = (window_times - reference_time) / self._time_step_state
+        return da_window.assign_coords(
+            window_time_delta=("window", time_deltas.astype(np.float32))
+        )
 
     def _empty_windowed_dataarray(
         self, grid_index: xr.DataArray, target_times: xr.DataArray
@@ -1011,6 +1102,19 @@ class WeatherDataset(torch.utils.data.Dataset):
 
         forcing = torch.tensor(da_forcing_windowed.values, dtype=tensor_dtype)
         boundary = torch.tensor(da_boundary_windowed.values, dtype=tensor_dtype)
+        if (
+            self.add_boundary_time_deltas
+            and self.da_boundary_forcing is not None
+        ):
+            boundary = torch.cat(
+                (
+                    boundary,
+                    self._boundary_time_delta_features(
+                        da_boundary_windowed, boundary.shape[1]
+                    ),
+                ),
+                dim=-1,
+            )
 
         # init_states: (2, num_grid_nodes, num_state_vars)
         # target_states: (pred_steps, num_grid_nodes, num_state_vars)
@@ -1020,6 +1124,41 @@ class WeatherDataset(torch.utils.data.Dataset):
         # target_times: (pred_steps,)
 
         return init_states, target_states, forcing, boundary, target_times
+
+    def _boundary_time_delta_features(
+        self, da_boundary_windowed: xr.DataArray, num_nodes: int
+    ) -> torch.Tensor:
+        """Time delta features of a stacked boundary window, broadcast over
+        the boundary grid nodes.
+
+        Parameters
+        ----------
+        da_boundary_windowed : xr.DataArray
+            Boundary forcing with a stacked ``forcing_feature_windowed``
+            dimension carrying the ``window_time_delta`` coordinate.
+        num_nodes : int
+            Number of boundary grid nodes.
+
+        Returns
+        -------
+        torch.Tensor
+            Shape ``(pred_steps, num_nodes, window_size)``.
+        """
+        window_size = (
+            self.num_past_boundary_steps + self.num_future_boundary_steps + 1
+        )
+        # All features share the deltas, the first feature's window is used
+        # The coordinate only keeps a `time` dimension when the deltas
+        # differ between target steps, so broadcast it explicitly
+        da_deltas, _ = xr.broadcast(
+            da_boundary_windowed["window_time_delta"].reset_coords(drop=True),
+            da_boundary_windowed["time"].reset_coords(drop=True),
+        )
+        time_deltas = da_deltas.transpose(
+            "time", "forcing_feature_windowed"
+        ).values[:, :window_size]
+        time_deltas = torch.tensor(time_deltas, dtype=torch.float32)
+        return time_deltas.unsqueeze(1).expand(-1, num_nodes, -1)
 
     def __iter__(
         self,
@@ -1136,6 +1275,138 @@ class WeatherDataset(torch.utils.data.Dataset):
         return da
 
 
+class SampleSubset(torch.utils.data.Subset):
+    """Subset of a :class:`WeatherDataset` that forwards attribute access
+    (e.g. ``datastore``, ``split``) to the wrapped dataset."""
+
+    def __getattr__(self, name: str) -> Any:
+        """Forward unknown attributes to the wrapped dataset.
+
+        Parameters
+        ----------
+        name : str
+            Attribute name.
+
+        Returns
+        -------
+        Any
+            The attribute of the wrapped dataset.
+        """
+        if name == "dataset":
+            raise AttributeError(name)
+        return getattr(self.dataset, name)
+
+
+class DomainTaggedDataset(torch.utils.data.Dataset):
+    """Wrap a dataset so that each sample also carries its domain index.
+
+    Samples are returned as
+    ``(init_states, target_states, forcing, boundary, target_times,
+    domain_idx)``.
+    """
+
+    def __init__(
+        self, dataset: torch.utils.data.Dataset, domain_idx: int
+    ) -> None:
+        """
+        Parameters
+        ----------
+        dataset : torch.utils.data.Dataset
+            Dataset returning 5-tuples.
+        domain_idx : int
+            Index of the domain the dataset belongs to.
+        """
+        super().__init__()
+        self.dataset = dataset
+        self.domain_idx = domain_idx
+
+    def __len__(self) -> int:
+        """Return the number of samples.
+
+        Returns
+        -------
+        int
+            Length of the wrapped dataset.
+        """
+        return len(self.dataset)  # ty: ignore[invalid-argument-type]
+
+    def __getitem__(self, idx: int) -> tuple[torch.Tensor, ...]:
+        """Return the sample with its domain index appended.
+
+        Parameters
+        ----------
+        idx : int
+            Sample index.
+
+        Returns
+        -------
+        tuple of torch.Tensor
+            The wrapped sample followed by the domain index.
+        """
+        return (*self.dataset[idx], torch.tensor(self.domain_idx))
+
+
+class DomainBatchSampler(torch.utils.data.Sampler):
+    """Shuffling batch sampler over a concatenation of datasets that only
+    forms batches within one of the datasets (domains), since samples from
+    different domains can have different numbers of grid nodes."""
+
+    def __init__(self, dataset_lengths: list[int], batch_size: int) -> None:
+        """
+        Parameters
+        ----------
+        dataset_lengths : list of int
+            Lengths of the concatenated datasets, in order.
+        batch_size : int
+            Number of samples per batch.
+        """
+        super().__init__()
+        self.dataset_lengths = dataset_lengths
+        self.batch_size = batch_size
+
+    def _batches(self) -> list[list[int]]:
+        """Create shuffled single-domain batches of global indices.
+
+        Returns
+        -------
+        list of list of int
+            The batches, in random order.
+        """
+        batches = []
+        offset = 0
+        for length in self.dataset_lengths:
+            perm = (torch.randperm(length) + offset).tolist()
+            batches += [
+                perm[i : i + self.batch_size]
+                for i in range(0, length, self.batch_size)
+            ]
+            offset += length
+        order = torch.randperm(len(batches)).tolist()
+        return [batches[i] for i in order]
+
+    def __iter__(self) -> Iterator[list[int]]:
+        """Iterate over batches.
+
+        Returns
+        -------
+        Iterator of list of int
+            Iterator over the batches of indices.
+        """
+        return iter(self._batches())
+
+    def __len__(self) -> int:
+        """Number of batches.
+
+        Returns
+        -------
+        int
+            Number of batches per epoch.
+        """
+        return sum(
+            -(-length // self.batch_size) for length in self.dataset_lengths
+        )
+
+
 class WeatherDataModule(pl.LightningDataModule):
     """DataModule for weather data."""
 
@@ -1153,6 +1424,13 @@ class WeatherDataModule(pl.LightningDataModule):
         batch_size: int = 4,
         num_workers: int = 16,
         eval_split: str = "test",
+        add_boundary_time_deltas: bool = False,
+        dynamic_time_deltas: bool = False,
+        eval_init_times: list[int] | None = None,
+        excluded_intervals: list[list[str]] | None = None,
+        additional_domains: (
+            list[tuple[BaseDatastore, BaseDatastore | None]] | None
+        ) = None,
     ) -> None:
         """
         Parameters
@@ -1185,6 +1463,24 @@ class WeatherDataModule(pl.LightningDataModule):
             Number of background workers per dataloader. Default ``16``.
         eval_split : str, optional
             Dataset split to use for ``test_dataloader``. Default ``"test"``.
+        add_boundary_time_deltas : bool, optional
+            Append boundary window time deltas as features, see
+            :class:`WeatherDataset`. Default ``False``.
+        dynamic_time_deltas : bool, optional
+            Compute boundary time deltas relative to the interior state
+            time, see :class:`WeatherDataset`. Default ``False``.
+        eval_init_times : list of int, optional
+            Hours (UTC) of the day that validation and test forecasts are
+            initialized at. Samples with other init times are skipped. If
+            ``None`` or empty, all samples are used.
+        excluded_intervals : list of [str, str], optional
+            ``[start, end]`` timestamp pairs; training samples using any
+            state in such an interval are skipped.
+        additional_domains : list of (datastore, datastore_boundary), optional
+            Further domains to train on together with ``datastore``. Each
+            training sample then also carries the index of its domain (0 is
+            ``datastore``) and each batch holds samples of one domain only.
+            Validation and testing use the first domain.
         """
         super().__init__()
         self._datastore = datastore
@@ -1203,6 +1499,19 @@ class WeatherDataModule(pl.LightningDataModule):
         self.test_dataset: WeatherDataset | None = None
         self.multiprocessing_context: str | None = None
         self.eval_split = eval_split
+        self.add_boundary_time_deltas = add_boundary_time_deltas
+        self.dynamic_time_deltas = dynamic_time_deltas
+        self.eval_init_times = list(eval_init_times or [])
+        self.excluded_intervals = [
+            (np.datetime64(start), np.datetime64(end))
+            for start, end in (excluded_intervals or [])
+        ]
+        for start, end in self.excluded_intervals:
+            if start > end:
+                raise ValueError(
+                    f"Can not exclude a time interval from {start} to {end}"
+                )
+        self.additional_domains = list(additional_domains or [])
         if num_workers > 0:
             # default to spawn for now, as the default on linux "fork" hangs
             # when using dask (which the npyfilesmeps datastore uses)
@@ -1224,30 +1533,135 @@ class WeatherDataModule(pl.LightningDataModule):
             "num_future_forcing_steps": self.num_future_forcing_steps,
             "num_past_boundary_steps": self.num_past_boundary_steps,
             "num_future_boundary_steps": self.num_future_boundary_steps,
-            "datastore_boundary": self._datastore_boundary,
             "load_single_member": self.load_single_member,
+            "add_boundary_time_deltas": self.add_boundary_time_deltas,
+            "dynamic_time_deltas": self.dynamic_time_deltas,
         }
         if stage == "fit" or stage is None:
-            self.train_dataset = WeatherDataset(
-                datastore=self._datastore,
-                split="train",
-                ar_steps=self.ar_steps_train,
-                **shared_kwargs,
-            )
-            self.val_dataset = WeatherDataset(
-                datastore=self._datastore,
-                split="val",
-                ar_steps=self.ar_steps_eval,
-                **shared_kwargs,
+            domains = [
+                (self._datastore, self._datastore_boundary)
+            ] + self.additional_domains
+            train_datasets = [
+                self._exclude_intervals(
+                    WeatherDataset(
+                        datastore=datastore,
+                        datastore_boundary=datastore_boundary,
+                        split="train",
+                        ar_steps=self.ar_steps_train,
+                        **shared_kwargs,
+                    )
+                )
+                for datastore, datastore_boundary in domains
+            ]
+            if len(train_datasets) == 1:
+                self.train_dataset = train_datasets[0]
+            else:
+                self.train_dataset = torch.utils.data.ConcatDataset(
+                    [
+                        DomainTaggedDataset(dataset, domain_idx)
+                        for domain_idx, dataset in enumerate(train_datasets)
+                    ]
+                )
+            self.val_dataset = self._select_init_times(
+                WeatherDataset(
+                    datastore=self._datastore,
+                    datastore_boundary=self._datastore_boundary,
+                    split="val",
+                    ar_steps=self.ar_steps_eval,
+                    **shared_kwargs,
+                )
             )
 
         if stage == "test" or stage is None:
-            self.test_dataset = WeatherDataset(
-                datastore=self._datastore,
-                split=self.eval_split,
-                ar_steps=self.ar_steps_eval,
-                **shared_kwargs,
+            self.test_dataset = self._select_init_times(
+                WeatherDataset(
+                    datastore=self._datastore,
+                    datastore_boundary=self._datastore_boundary,
+                    split=self.eval_split,
+                    ar_steps=self.ar_steps_eval,
+                    **shared_kwargs,
+                )
             )
+
+    def _exclude_intervals(
+        self, dataset: WeatherDataset
+    ) -> torch.utils.data.Dataset:
+        """Drop samples using any state within an excluded interval.
+
+        Parameters
+        ----------
+        dataset : WeatherDataset
+            Dataset to filter.
+
+        Returns
+        -------
+        torch.utils.data.Dataset
+            ``dataset`` itself if nothing is excluded, else a subset.
+        """
+        if not self.excluded_intervals:
+            return dataset
+        init_times, end_times = dataset.sample_time_spans()
+        # The first state of a sample is one step before its init time
+        start_times = init_times - (end_times - init_times) / max(
+            dataset.ar_steps, 1
+        )
+        keep = np.ones(len(init_times), dtype=bool)
+        for exc_start, exc_end in self.excluded_intervals:
+            keep &= ~((start_times <= exc_end) & (end_times >= exc_start))
+        logger.info(
+            f"Excluding {int((~keep).sum())} of {len(keep)} training samples "
+            "overlapping excluded intervals"
+        )
+        return SampleSubset(dataset, np.flatnonzero(keep).tolist())
+
+    def _select_init_times(
+        self, dataset: WeatherDataset
+    ) -> torch.utils.data.Dataset:
+        """Keep only samples initialized at ``eval_init_times`` (UTC hours).
+
+        Parameters
+        ----------
+        dataset : WeatherDataset
+            Dataset to filter.
+
+        Returns
+        -------
+        torch.utils.data.Dataset
+            ``dataset`` itself if no init times are set, else a subset.
+
+        Raises
+        ------
+        ValueError
+            If no sample has one of the requested init times.
+        """
+        if not self.eval_init_times:
+            return dataset
+        init_times, _ = dataset.sample_time_spans()
+        init_hours = init_times.astype("datetime64[h]").astype(np.int64) % 24
+        indices = np.flatnonzero(np.isin(init_hours, self.eval_init_times))
+        if len(indices) == 0:
+            raise ValueError(
+                f"No {dataset.split} samples are initialized at hours "
+                f"{self.eval_init_times} (UTC)."
+            )
+        return SampleSubset(dataset, indices.tolist())
+
+    def _domain_batch_sampler(
+        self,
+    ) -> "DomainBatchSampler | None":
+        """Batch sampler keeping each training batch within one domain.
+
+        Returns
+        -------
+        DomainBatchSampler or None
+            ``None`` when training on a single domain.
+        """
+        if not isinstance(self.train_dataset, torch.utils.data.ConcatDataset):
+            return None
+        return DomainBatchSampler(
+            [len(d) for d in self.train_dataset.datasets],
+            batch_size=self.batch_size,
+        )
 
     def train_dataloader(self) -> torch.utils.data.DataLoader:
         """Load train dataset.
@@ -1258,6 +1672,16 @@ class WeatherDataModule(pl.LightningDataModule):
             Dataloader over ``self.train_dataset``, shuffled.
         """
         assert self.train_dataset is not None
+        batch_sampler = self._domain_batch_sampler()
+        if batch_sampler is not None:
+            return torch.utils.data.DataLoader(
+                self.train_dataset,
+                batch_sampler=batch_sampler,
+                num_workers=self.num_workers,
+                multiprocessing_context=self.multiprocessing_context,
+                persistent_workers=self.num_workers > 0,
+                pin_memory=torch.cuda.is_available(),
+            )
         return torch.utils.data.DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,

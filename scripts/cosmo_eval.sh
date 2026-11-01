@@ -15,6 +15,7 @@ python -m neural_lam.train_model \
     --batch_size 1 \
     --plot_vars "T_2M" "U_10M" \
     --precision bf16-mixed \
-    --graph_name rectangular_hierarchical \
+    --graph rectangular_hierarchical \
     --config_path cosmo_model_config_ifs.yaml \
+    --eval_init_times 0 12 \
     --load cosmo_model.ckpt
