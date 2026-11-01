@@ -6,6 +6,7 @@ import os
 import pickle
 import warnings
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 # Third-party
@@ -1015,10 +1016,9 @@ class BaseForecastingModule(pl.LightningModule, ABC):
                             for frame in frames:
                                 frame.close()
 
-            os.makedirs(
-                self.logger.save_dir,  # ty: ignore[unresolved-attribute]
-                exist_ok=True,
-            )
+            save_dir = self.logger.save_dir  # ty: ignore[unresolved-attribute]
+            if isinstance(save_dir, (str, Path)):
+                os.makedirs(save_dir, exist_ok=True)
             torch.save(
                 pred_slice.cpu(),
                 os.path.join(
@@ -1319,7 +1319,8 @@ class BaseForecastingModule(pl.LightningModule, ABC):
             },
         )
         save_dir = self.logger.save_dir  # ty: ignore[unresolved-attribute]
-        if save_dir is None:
+        # Only write to real directories (e.g. not for mocked loggers)
+        if not isinstance(save_dir, (str, Path)):
             return
         os.makedirs(save_dir, exist_ok=True)
         with open(os.path.join(save_dir, f"{prefix}_metrics.pkl"), "wb") as f:
