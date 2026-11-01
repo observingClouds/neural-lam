@@ -1073,6 +1073,10 @@ def run(
     # is the main domain
     config_paths = getattr(args, "config_paths", None)
     graph_names = getattr(args, "graph_names", None)
+    if not isinstance(config_paths, (list, tuple)):
+        config_paths = None
+    if not isinstance(graph_names, (list, tuple)):
+        graph_names = None
     if config_paths:
         if args.config_path and args.config_path != config_paths[0]:
             raise ValueError("Give either --config_path or --config_paths.")
